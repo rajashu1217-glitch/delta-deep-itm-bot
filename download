@@ -1,0 +1,12 @@
+# Delta Exchange India Demo Credentials
+DELTA_API_KEY=IyPceThyUkSBe79etL7R3cEqMCmJPs
+DELTA_API_SECRET=HsV34NeEuehGrebVMxZeOfHFQGu0a4Kub4Y7SC2NhzWhaxwvrsP1zuHHXIwk
+IS_TESTNET=True
+
+# Telegram Alerts Credentials
+ENABLE_TELEGRAM=True
+TELEGRAM_BOT_TOKEN=8794930945:AAEUmy3a47Owwl-MRkcEjbpiqVt0AkoJMKQ
+TELEGRAM_CHAT_ID=7593439860
+
+# Live Demo Trading Mode (False = places live orders on Demo Account)
+DRY_RUN=False
