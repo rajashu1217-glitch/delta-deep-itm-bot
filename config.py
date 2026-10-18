@@ -27,18 +27,25 @@ BASE_URL = "https://cdn-ind.testnet.deltaex.org" if IS_TESTNET else "https://api
 # ==========================================
 SYMBOL_SPOT = "BTCUSD"
 
-# Model 1: Deep ITM Synthetic Delta Settings
-DEEP_ITM_OFFSET = 7000.0        # Spot - $7000 for Call, Spot + $7000 for Put
-FIXED_RISK_USD = 300.0          # Risk per trade ($300 USD)
-SL_POINTS = 300.0               # Stop loss points on option premium ($300)
-TP1_POINTS = 600.0              # Target 1 points (+600 pts = 1:2 Risk-Reward)
+# Low-Loss 1-Trade-Per-Day Deep ITM Settings (AlgoTest Verified)
+DEEP_ITM_OFFSET = float(os.getenv("DEEP_ITM_OFFSET", "5000.0"))
+FIXED_RISK_USD = float(os.getenv("FIXED_RISK_USD", "300.0"))
+SL_POINTS = float(os.getenv("SL_POINTS", "300.0"))
+TP1_POINTS = float(os.getenv("TP1_POINTS", "600.0"))
+ONE_TRADE_PER_DAY = os.getenv("ONE_TRADE_PER_DAY", "True").lower() in ("true", "1", "yes")
+CLOSE_FULL_AT_TP1 = os.getenv("CLOSE_FULL_AT_TP1", "True").lower() in ("true", "1", "yes")
 
 # Position Sizing
-FIXED_SIZE_BTC = 1.0            # 300 risk / 300 pts SL = exactly 1.0 BTC contract size
-MAX_POSITION_SIZE = 1.2         # Safety cap
+FIXED_SIZE_BTC = float(os.getenv("FIXED_SIZE_BTC", "1.0"))
+MAX_POSITION_SIZE = float(os.getenv("MAX_POSITION_SIZE", "1.2"))
 
 # Time Stop
-MAX_HOLDING_MINUTES = 240       # 4 Hours max holding time to prevent theta decay
+MAX_HOLDING_MINUTES = int(os.getenv("MAX_HOLDING_MINUTES", "240"))
+
+# New York Session Filter (13:00 to 21:00 UTC = 6:30 PM to 2:30 AM IST)
+NY_SESSION_ONLY = os.getenv("NY_SESSION_ONLY", "False").lower() in ("true", "1", "yes")
+NY_START_UTC = int(os.getenv("NY_START_UTC", "13")) # 6:30 PM IST
+NY_END_UTC = int(os.getenv("NY_END_UTC", "21"))     # 2:30 AM IST
 
 # ==========================================
 # TELEGRAM NOTIFICATIONS (OPTIONAL)
