@@ -1,15 +1,24 @@
 import datetime
 import pandas as pd
-from indicators import calculate_ema, calculate_ttm_squeeze, get_liquidity_levels
-from config import DEEP_ITM_OFFSET
+from indicators import calculate_ema, get_liquidity_levels
+from config import DEEP_ITM_OFFSET, NY_SESSION_ONLY, NY_START_UTC, NY_END_UTC
 
-def evaluate_market_setup(df_1h: pd.DataFrame, df_15m: pd.DataFrame):
+def evaluate_market_setup(df_1h: pd.DataFrame, df_1m: pd.DataFrame):
     """
-    Evaluates institutional triggers at 15m candle close:
+    Evaluates institutional triggers at 1-minute candle close:
+    - 1-Hour Trend Filter (20 EMA)
+    - Asian Range High/Low Liquidity Sweep (SMC Institutional Setup)
     Returns: 'BUY_CALL', 'BUY_PUT', or None
     """
-    if len(df_1h) < 25 or len(df_15m) < 35:
+    if len(df_1h) < 25 or len(df_1m) < 60:
         return None
+
+    # Optional New York Session Filter (13:00 to 21:00 UTC = 6:30 PM to 2:30 AM IST)
+    if NY_SESSION_ONLY:
+        last_ts = int(df_1m.iloc[-1]['time'])
+        utc_dt = datetime.datetime.fromtimestamp(last_ts, tz=datetime.timezone.utc)
+        if not (NY_START_UTC <= utc_dt.hour < NY_END_UTC):
+            return None
         
     # 1. 1-Hour Trend Filter
     df_1h = df_1h.copy()
@@ -18,48 +27,26 @@ def evaluate_market_setup(df_1h: pd.DataFrame, df_15m: pd.DataFrame):
     bullish_trend = latest_1h['close'] > latest_1h['ema20']
     bearish_trend = latest_1h['close'] < latest_1h['ema20']
     
-    # 2. 15-Minute Squeeze Calculation
-    df_15m = calculate_ttm_squeeze(df_15m)
+    last_1m = df_1m.iloc[-1]
+    prev_1m = df_1m.iloc[-2]
     
-    # Check last 3 candles for Squeeze Compression or Firing
-    recent_squeeze = df_15m['squeeze_on'].iloc[-4:-1].any() or df_15m['squeeze_fired'].iloc[-2]
-    if not recent_squeeze:
-        return None
-        
-    last_15m = df_15m.iloc[-1]
-    prev_15m = df_15m.iloc[-2]
-    
-    # 3. Liquidity Reference Levels
-    curr_ts = int(last_15m['time'])
-    levels = get_liquidity_levels(df_15m, curr_ts)
+    # 2. Asian Session Reference Levels (00:00 to 08:00 UTC = 05:30 to 13:30 IST)
+    curr_ts = int(last_1m['time'])
+    levels = get_liquidity_levels(df_1m, curr_ts)
     asian_low = levels.get('asian_low')
     asian_high = levels.get('asian_high')
-    pdl = levels.get('pdl')
-    pdh = levels.get('pdh')
     
-    # A. BUY CALL SETUP (Bullish Trend + Support Sweep + Green close above 20 EMA)
-    if bullish_trend:
-        support_level = min([x for x in [asian_low, pdl] if x is not None], default=None)
-        if support_level:
-            # Rejection wick below support in previous or current candle
-            swept_support = (prev_15m['low'] < support_level and prev_15m['close'] > support_level) or (last_15m['low'] < support_level)
-            # Confirmation: current 15m candle is strong green & closed above 20 EMA
-            is_green = last_15m['close'] > last_15m['open']
-            above_ema = last_15m['close'] > last_15m['ema20']
-            if swept_support and is_green and above_ema:
-                return 'BUY_CALL'
+    # A. BUY CALL SETUP (Bullish Trend + Asian Support Liquidity Sweep & Reclaim)
+    is_sweep_buy = (asian_low is not None and prev_1m['low'] < asian_low and last_1m['close'] > asian_low and last_1m['close'] > last_1m['open'])
+    
+    if bullish_trend and is_sweep_buy:
+        return 'BUY_CALL'
                 
-    # B. BUY PUT SETUP (Bearish Trend + Resistance Sweep + Red close below 20 EMA)
-    if bearish_trend:
-        resistance_level = max([x for x in [asian_high, pdh] if x is not None], default=None)
-        if resistance_level:
-            # Rejection wick above resistance in previous or current candle
-            swept_resistance = (prev_15m['high'] > resistance_level and prev_15m['close'] < resistance_level) or (last_15m['high'] > resistance_level)
-            # Confirmation: current 15m candle is strong red & closed below 20 EMA
-            is_red = last_15m['close'] < last_15m['open']
-            below_ema = last_15m['close'] < last_15m['ema20']
-            if swept_resistance and is_red and below_ema:
-                return 'BUY_PUT'
+    # B. BUY PUT SETUP (Bearish Trend + Asian Resistance Liquidity Sweep & Rejection)
+    is_sweep_sell = (asian_high is not None and prev_1m['high'] > asian_high and last_1m['close'] < asian_high and last_1m['close'] < last_1m['open'])
+    
+    if bearish_trend and is_sweep_sell:
+        return 'BUY_PUT'
                 
     return None
 

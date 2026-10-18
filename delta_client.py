@@ -104,7 +104,7 @@ class DeltaClient:
     # ==========================================
     # PRIVATE TRADING METHODS
     # ==========================================
-    def place_order(self, product_id: int, size: float, side: str, order_type: str = "market_order", limit_price: float = None, stop_price: float = None):
+    def place_order(self, product_id: int, size: float, side: str, order_type: str = "market_order", limit_price: float = None, stop_price: float = None, reduce_only: bool = False):
         """
         Place Market, Limit, or Stop-Loss Order.
         side: 'buy' or 'sell'
@@ -121,12 +121,25 @@ class DeltaClient:
             "side": side.lower(),
             "order_type": order_type.lower()
         }
+        if reduce_only:
+            data["reduce_only"] = True
         if limit_price is not None:
             data["limit_price"] = str(limit_price)
         if stop_price is not None:
             data["stop_price"] = str(stop_price)
 
         return self._request('POST', path, data=data, auth=True)
+
+    def get_open_position(self, product_id: int) -> float:
+        """Fetch open position size in BTC for a specific product."""
+        if self.dry_run:
+            return 1.0
+        res = self._request('GET', '/v2/positions/margined', auth=True)
+        if res and res.get('success'):
+            for p in res.get('result', []):
+                if p.get('product_id') == product_id:
+                    return abs(float(p.get('size', 0))) / 1000.0
+        return 0.0
 
     def cancel_order(self, order_id: str, product_id: int):
         """Cancel an open order."""
