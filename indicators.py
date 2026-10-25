@@ -44,7 +44,7 @@ def calculate_ttm_squeeze(df: pd.DataFrame, length: int = 20, bb_mult: float = 2
 def get_liquidity_levels(df_15m: pd.DataFrame, current_ts: int):
     """
     Calculates:
-    - Asian Range High/Low: Highest & Lowest between 00:00 UTC and 08:00 UTC
+    - Asian Range High/Low: Highest & Lowest between 00:00 UTC and 08:00 UTC (05:30 to 13:30 IST)
     - Previous Day High (PDH) & Previous Day Low (PDL) (00:00 UTC to 23:59 UTC)
     """
     curr_dt = datetime.datetime.fromtimestamp(current_ts, tz=datetime.timezone.utc)

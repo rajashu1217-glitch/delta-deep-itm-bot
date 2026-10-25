@@ -96,7 +96,6 @@ class DeltaClient:
         res = self._request('GET', path, auth=False)
         if res and res.get('success', False):
             all_prods = res.get('result', [])
-            # Filter for BTC Options
             options = [p for p in all_prods if p.get('contract_type') in ['call_options', 'put_options'] and p.get('underlying_asset', {}).get('symbol') == 'BTC']
             return options
         return []
@@ -104,42 +103,28 @@ class DeltaClient:
     # ==========================================
     # PRIVATE TRADING METHODS
     # ==========================================
-    def place_order(self, product_id: int, size: float, side: str, order_type: str = "market_order", limit_price: float = None, stop_price: float = None, reduce_only: bool = False):
+    def place_order(self, product_id: int, size: float, side: str, order_type: str = "market_order", limit_price: float = None, stop_price: float = None):
         """
         Place Market, Limit, or Stop-Loss Order.
         side: 'buy' or 'sell'
-        order_type: 'market_order', 'limit_order', 'stop_market_order'
         """
         if self.dry_run:
-            print(f"[DRY RUN SIMULATION] Placed {order_type.upper()} {side.upper()} | Product ID: {product_id} | Size: {size} BTC | Limit: {limit_price} | Stop: {stop_price}")
+            print(f"[DRY RUN SIMULATION] Placed {order_type.upper()} {side.upper()} | Product ID: {product_id} | Size: {size} BTC")
             return {"success": True, "result": {"id": f"sim_{int(time.time())}", "status": "filled"}}
 
         path = "/v2/orders"
         data = {
             "product_id": product_id,
-            "size": int(size * 1000), # Note: Check product contract_value (usually 0.001 or 1)
+            "size": int(size * 1000), # Note: Delta contract lot multiplier
             "side": side.lower(),
             "order_type": order_type.lower()
         }
-        if reduce_only:
-            data["reduce_only"] = True
         if limit_price is not None:
             data["limit_price"] = str(limit_price)
         if stop_price is not None:
             data["stop_price"] = str(stop_price)
 
         return self._request('POST', path, data=data, auth=True)
-
-    def get_open_position(self, product_id: int) -> float:
-        """Fetch open position size in BTC for a specific product."""
-        if self.dry_run:
-            return 1.0
-        res = self._request('GET', '/v2/positions/margined', auth=True)
-        if res and res.get('success'):
-            for p in res.get('result', []):
-                if p.get('product_id') == product_id:
-                    return abs(float(p.get('size', 0))) / 1000.0
-        return 0.0
 
     def cancel_order(self, order_id: str, product_id: int):
         """Cancel an open order."""

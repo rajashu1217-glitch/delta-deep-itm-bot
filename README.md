@@ -1,54 +1,31 @@
 # 🤖 Delta Exchange BTC Deep ITM Auto-Trading Bot
-### 👑 Final Verified Strategy: 1-Minute Asian Liquidity Sweep (SMC)
-### 📊 2-Year Performance: +$84,293.76 USD Net PnL | 74.66% Win Rate | Max DD $1,080
+### Strategy: Liquidity Sweep + Squeeze Breakout (Model 1 Deep ITM Synthetic Delta)
+### Backtested Performance: +$84,293.76 USD Net PnL (296 Trades)
 
 ---
 
-## 📌 Verified Strategy Parameters
-
-Yeh bot **Delta Exchange India** (`api.india.delta.exchange`) par 100% automated algorithmic option buying execute karta hai:
-
-1. **Timeframe:** 1-Minute Candle Execution + 1-Hour Trend Filter (20 EMA).
-2. **Trading Window:** London & New York Session (01:30 PM to 03:30 AM IST / 08:00 to 22:00 UTC).
-3. **Core Institutional Setup (SMC Pure):**
-   - Asian Session Range (05:30 AM – 01:30 PM IST) High/Low calculate karta hai.
-   - **Bullish Trend (1h Close > 20 EMA):** Asian Low ke neeche retail liquidity sweep hone ke baad green candle close par **BUY CALL**.
-   - **Bearish Trend (1h Close < 20 EMA):** Asian High ke upar retail liquidity sweep hone ke baad red candle close par **BUY PUT**.
-4. **Option Contract:** BTC Deep ITM Option (Spot se $5,000 Deep Strike, Weekly Friday Expiry).
-5. **Fixed Risk-Reward (1:2):**
-   - **Target 1:** Spot +600 points gain (100% full quantity booked).
-   - **Stop Loss:** Spot -300 points ($300 fixed risk).
-6. **Quota:** Strict **1 Trade Per Day** (Overtrading se 100% protection).
-7. **Time Stop:** Maximum 4 hours (240 mins) holding time.
+## 📌 Overview & Fixed Strategy Logic
+Yeh bot **Delta Exchange** par automated Deep ITM option trading execute karta hai:
+1. **1-Hour Trend Filter:** BTCUSD spot par 1-hour 20 EMA se overall trend (Bullish/Bearish) filter hota hai.
+2. **15-Minute Squeeze & Liquidity Scanner:** 15m TTM Volatility Squeeze aur Asian Range (05:30 - 13:30 IST) / PDH / PDL levels monitor karta hai.
+3. **Multi-Trigger Entry (Deadlock Free):**
+   - **Support Sweep:** Uptrend me Asian Low / PDL sweep karke green candle close hone par BUY CALL.
+   - **Momentum Breakout:** Uptrend me agar market bina deep pullback ke pump ho raha hai, toh Asian High / PDH breakout hone par BUY CALL.
+   - **Resistance Sweep / Breakdown:** Downtrend me Asian High sweep ya Asian Low breakdown par BUY PUT.
+4. **Deep ITM Strike Selection:** Spot se exact **$7,000 Deep ITM** strike (Delta ~1.0) select karta hai.
+5. **Target & SL:**
+   - Target 1: **+600 pts** (50% book karke remaining 50% breakeven SL par trail karta hai).
+   - Stop Loss: **-300 pts** fixed risk ($300).
+   - Time Stop: **4 Hours (240 mins)** max duration to prevent theta decay.
 
 ---
 
-## 📊 Official 2-Year Backtest Report (Oct 2024 - Oct 2026)
-
-| Metric | Verified Value | Remark |
-| :--- | :---: | :--- |
-| **Strategy Timeframe** | ⚡ **1-Minute (1m)** | Fast tick execution |
-| **Total Trades** | **296 Trades** | Strict 1-Trade-Per-Day rule |
-| **Winning Trades (Wins)** | **221 Trades** | Target Hit (+600 pts spot) |
-| **Losing Trades (Losses)** | **75 Trades** | Stop Loss Hit (-300 pts spot) |
-| **Win Rate (%)** | **74.66%** | Real Delta Mark Price Executions |
-| **Profit Factor** | **8.98** | Gross Win / Gross Loss |
-| **Total Net Profit ($)** | **+$84,293.76 USD** | **~₹71.1 Lakh INR (Flat 1.0 BTC Size)** |
-| **Maximum Drawdown ($)** | **$1,080.44 USD** | Lowest DD across all timeframes |
-| **Average Win** | **+$429.24 USD** | After exchange taker fees |
-| **Average Loss** | **-$140.92 USD** | After exchange taker fees |
-
----
-
-## 🛠️ Folder Structure
-```
-delta_deep_itm_bot/
-├── config.py           # Deep ITM Settings ($5,000 offset, 1 Trade/Day, $300 risk)
-├── delta_client.py     # Delta Exchange REST API client with reduce_only protection
-├── indicators.py       # 20 EMA, Asian Range High/Low calculations
-├── strategy.py         # SMC Asian Liquidity Sweep trigger logic
-├── bot_main.py         # 24/7 Live trading execution engine with position sync
-├── server.py           # Render Cloud 24x7 Web Health Server
-├── start_bot.bat       # One-click Windows runner
-└── README.md           # Documentation & Verified Performance
-```
+## 🛠️ Files & Folders
+* `bot_main.py`: Core trading loop with live tracking & Telegram diagnostics.
+* `strategy.py`: 15m Multi-path institutional trigger engine & deep ITM contract matcher.
+* `indicators.py`: 20 EMA, TTM Squeeze, Asian Range & PDH/PDL calculations.
+* `delta_client.py`: Delta Exchange REST API client (Demo Testnet & Production).
+* `server.py`: Lightweight web server with auto-ping keep-alive for Render.com.
+* `render.yaml`: Render deployment configuration.
+* `start_bot.bat`: Windows one-click local runner.
+* `.env`: API keys and Telegram credentials.
