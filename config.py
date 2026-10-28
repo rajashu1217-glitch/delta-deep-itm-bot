@@ -52,7 +52,9 @@ MAX_OB_BARS = int(os.getenv("MAX_OB_BARS", "32"))     # 32 bars = 8 hours OB val
 # RISK MANAGEMENT & TRADE EXECUTION
 # ==========================================
 SYMBOL_SPOT = "BTCUSD"
-FIXED_SIZE_BTC = float(os.getenv("FIXED_SIZE_BTC", "1.0"))  # 1.0 BTC option lot size
+# Default lot size: 0.2 BTC (200 contracts, requires ~$350 margin, ideal for demo/starter accounts)
+# Can be overridden via Render Environment Variable FIXED_SIZE_BTC (e.g. 1.0)
+FIXED_SIZE_BTC = float(os.getenv("FIXED_SIZE_BTC", "0.2"))
 
 # Stop Loss Parameters (Price Action Swing / OB Level SL)
 SL_MIN_PTS = float(os.getenv("SL_MIN_PTS", "150.0"))        # Minimum 150 pts SL

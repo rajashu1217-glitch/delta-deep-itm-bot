@@ -103,22 +103,25 @@ class DeltaClient:
     # ==========================================
     # PRIVATE TRADING METHODS
     # ==========================================
-    def place_order(self, product_id: int, size: float, side: str, order_type: str = "market_order", limit_price: float = None, stop_price: float = None):
+    def place_order(self, product_id: int, size: float, side: str, order_type: str = "market_order", limit_price: float = None, stop_price: float = None, reduce_only: bool = False):
         """
         Place Market, Limit, or Stop-Loss Order.
         side: 'buy' or 'sell'
+        reduce_only: True ensures an exit order never opens a new/short position.
         """
         if self.dry_run:
-            print(f"[DRY RUN SIMULATION] Placed {order_type.upper()} {side.upper()} | Product ID: {product_id} | Size: {size} BTC")
-            return {"success": True, "result": {"id": f"sim_{int(time.time())}", "status": "filled"}}
+            print(f"[DRY RUN SIMULATION] Placed {order_type.upper()} {side.upper()} | Product ID: {product_id} | Size: {size} BTC | ReduceOnly: {reduce_only}")
+            return {"success": True, "result": {"id": f"sim_{int(time.time())}", "status": "filled", "average_fill_price": str(limit_price or 0.0), "size": int(round(size * 1000))}}
 
         path = "/v2/orders"
         data = {
             "product_id": product_id,
-            "size": int(size * 1000), # Note: Delta contract lot multiplier
+            "size": int(round(size * 1000)), # Note: Delta contract lot multiplier (1 BTC = 1000 lots)
             "side": side.lower(),
             "order_type": order_type.lower()
         }
+        if reduce_only:
+            data["reduce_only"] = True
         if limit_price is not None:
             data["limit_price"] = str(limit_price)
         if stop_price is not None:
@@ -139,6 +142,31 @@ class DeltaClient:
     def get_wallet_balances(self):
         """Fetch available margin in USD/USDT."""
         if self.dry_run:
-            return {"available_balance": 10000.0}
+            return {"success": True, "result": [{"asset_symbol": "USD", "available_balance": "10000.0"}]}
         path = "/v2/wallet/balances"
         return self._request('GET', path, auth=True)
+
+    def get_available_usd_balance(self) -> float:
+        """Fetch available USD cash margin."""
+        if self.dry_run:
+            return 10000.0
+        res = self.get_wallet_balances()
+        if res and res.get('success', False):
+            for item in res.get('result', []):
+                if item.get('asset_symbol') == 'USD':
+                    return float(item.get('available_balance', 0.0))
+        return 0.0
+
+    def get_open_position(self, product_id: int) -> dict:
+        """Fetch open position details for a specific product."""
+        if self.dry_run:
+            return {}
+        path = f"/v2/positions?product_id={product_id}"
+        res = self._request('GET', path, auth=True)
+        if res and res.get('success', False):
+            result = res.get('result', {})
+            if isinstance(result, dict) and int(result.get('size', 0)) != 0:
+                return result
+            elif isinstance(result, list) and len(result) > 0:
+                return result[0]
+        return {}

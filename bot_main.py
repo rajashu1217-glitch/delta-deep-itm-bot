@@ -429,11 +429,59 @@ class DeltaDeepITMBot:
         opt_candles = self.client.get_candles(f"MARK:{symbol}", resolution="1m", start_ts=now_ts - 180, end_ts=now_ts)
         entry_premium = float(opt_candles[-1]['close']) if opt_candles else float(contract.get('mark_price', 0))
 
-        # Place Order
-        order_res = self.client.place_order(product_id=prod_id, size=FIXED_SIZE_BTC, side="buy", order_type="market_order")
-        print(f"[ORDER EXECUTED] {symbol} | Response: {order_res}")
+        # Dynamic Lot Sizing & Delta Margin Verification
+        trade_size = FIXED_SIZE_BTC
+        if not self.client.dry_run:
+            avail_usd = self.client.get_available_usd_balance()
+            req_cost = trade_size * entry_premium
+            if req_cost > avail_usd * 0.85:
+                # Dynamic scale down to 80% of available balance to guarantee order fill
+                max_safe_btc = round((avail_usd * 0.80) / entry_premium, 2)
+                if max_safe_btc >= 0.01:
+                    print(f"[MARGIN AUTO-SCALE] Available USD: ${avail_usd:,.2f} | Requested: {trade_size} BTC (${req_cost:,.2f}) -> Auto-scaled to safe size: {max_safe_btc} BTC (${max_safe_btc * entry_premium:,.2f})")
+                    trade_size = max_safe_btc
+                else:
+                    err_msg = (
+                        f"❌ TRADE ABORTED: Insufficient Margin on Delta!\n"
+                        f"Symbol: {symbol}\n"
+                        f"Available Cash: ${avail_usd:,.2f} USD\n"
+                        f"Minimum Required: ${entry_premium * 0.01:,.2f} USD\n"
+                        f"Please add funds to your Delta account."
+                    )
+                    print(f"[INSUFFICIENT BALANCE] {err_msg}")
+                    send_telegram(err_msg)
+                    return
 
-        # Update Quota Tracker
+        # Place Order on Delta Exchange
+        order_res = self.client.place_order(product_id=prod_id, size=trade_size, side="buy", order_type="market_order")
+        print(f"[ORDER PLACED] {symbol} | Response: {order_res}")
+
+        # Strict Verification: Delta MUST return success=True
+        if not order_res or not order_res.get('success', False):
+            err_code = order_res.get('error', {}).get('code', 'Unknown Error') if order_res else "No Response"
+            err_ctx = order_res.get('error', {}).get('context', {}) if order_res else {}
+            err_msg = (
+                f"❌ DELTA REJECTED ORDER!\n"
+                f"Symbol: {symbol}\n"
+                f"Reason: {err_code}\n"
+                f"Details: {err_ctx}\n"
+                f"Trade was NOT entered. Virtual tracking aborted."
+            )
+            print(f"[ORDER REJECTED] {err_msg}")
+            send_telegram(err_msg)
+            return
+
+        # Fetch actual executed fill price and lot size from Delta response
+        order_result = order_res.get('result', {})
+        avg_fill = order_result.get('average_fill_price')
+        if avg_fill:
+            try:
+                entry_premium = float(avg_fill)
+            except Exception:
+                pass
+        filled_size = float(order_result.get('size', int(round(trade_size * 1000)))) / 1000.0
+
+        # Update Quota Tracker only upon verified execution
         if setup_type == 'OB_FVG':
             self.last_ob_trade_date = today_date
         elif setup_type == 'REVERSAL':
@@ -446,7 +494,7 @@ class DeltaDeepITMBot:
             "trade_type": trade_type,
             "setup_type": setup_type,
             "strike": strike,
-            "size": FIXED_SIZE_BTC,
+            "size": filled_size,
             "entry_time_ts": now_ts,
             "entry_time_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
             "entry_premium": entry_premium,
@@ -517,11 +565,21 @@ class DeltaDeepITMBot:
             # 2. Target Hit (+600 pts) -> Book 50%, runner trails on 15m EMA20
             if curr_high >= t['tp1_prem']:
                 print(f"[TARGET HIT] Reached ${t['tp1_prem']}! Booking 50%...")
-                self.client.place_order(product_id=prod_id, size=t['size'] * 0.5, side="sell", order_type="market_order")
+                tp_size = round(t['size'] * 0.5, 3)
+                close_tp1 = self.client.place_order(product_id=prod_id, size=tp_size, side="sell", order_type="market_order", reduce_only=True)
+                print(f"[TP1 ORDER RESPONSE] {close_tp1}")
+                booked_prem = t['tp1_prem']
+                if close_tp1 and close_tp1.get('success'):
+                    avg_fill = close_tp1.get('result', {}).get('average_fill_price')
+                    if avg_fill:
+                        try:
+                            booked_prem = float(avg_fill)
+                        except Exception:
+                            pass
                 t['sl_prem'] = t['entry_premium'] # Move to Breakeven
-                t['tp1_booked_prem'] = t['tp1_prem']
+                t['tp1_booked_prem'] = booked_prem
                 self.state = "IN_TRADE_RUNNER"
-                send_telegram(f"✅ TARGET BOOKED on {sym} at ${t['tp1_prem']} (+50% booked)! Runner trailing on 15m 20 EMA with Breakeven SL.")
+                send_telegram(f"✅ TARGET BOOKED on {sym} at ${booked_prem:,.2f} (+50% booked)! Runner trailing on 15m 20 EMA with Breakeven SL.")
                 return
 
         # ==========================================
@@ -555,9 +613,21 @@ class DeltaDeepITMBot:
 
     def _close_position(self, exit_premium: float, reason: str, now_ist: datetime.datetime):
         t = self.active_trade
-        remaining_size = t['size'] if self.state == "IN_TRADE_LEG1" else t['size'] * 0.5
+        remaining_size = t['size'] if self.state == "IN_TRADE_LEG1" else round(t['size'] * 0.5, 3)
         
-        self.client.place_order(product_id=t['product_id'], size=remaining_size, side="sell", order_type="market_order")
+        # Safe Exit: reduce_only=True guarantees Delta will NEVER open an unintended short position!
+        close_res = self.client.place_order(product_id=t['product_id'], size=remaining_size, side="sell", order_type="market_order", reduce_only=True)
+        print(f"[CLOSE ORDER] {t['symbol']} | Reason: {reason} | Response: {close_res}")
+
+        if close_res and close_res.get('success'):
+            avg_fill = close_res.get('result', {}).get('average_fill_price')
+            if avg_fill:
+                try:
+                    exit_premium = float(avg_fill)
+                except Exception:
+                    pass
+        elif close_res and close_res.get('error', {}).get('code') == 'no_position_for_reduce_only':
+            print(f"[CLOSE NOTICE] Position on {t['symbol']} was already closed on Delta.")
 
         entry_prem = t['entry_premium']
         gross_pnl = (exit_premium - entry_prem) * t['size']
