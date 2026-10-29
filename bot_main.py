@@ -1,8 +1,16 @@
+import sys
 import time
 import datetime
 import requests
 import threading
 import pandas as pd
+
+# Force unbuffered line output for Render cloud logs
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
 from config import (
     SYMBOL_SPOT, FIXED_SIZE_BTC, TARGET_POINTS, 
     TRAILING_TRIGGER, TRAILING_LOCK_OFFSET,
@@ -47,9 +55,10 @@ class DeltaDeepITMBot:
         self.state = "IDLE"  # IDLE, IN_TRADE_LEG1, IN_TRADE_RUNNER
         self.active_trade = {}
         
-        # Dual-Quota Independent Trackers
-        self.last_ob_trade_date = None   # 1 OB+FVG per day
-        self.last_rev_trade_date = None  # 1 Reversal per day (NEVER blocked by OB+FVG!)
+        # Daily Tracker for Statistics & PnL (No artificial limit - Governed by Hourly Trap Filters & Cooldown!)
+        self.daily_trade_date = None
+        self.today_trades = []
+        self.today_pnl = 0.0
         
         self.last_status_report_ts = 0
 
@@ -258,7 +267,7 @@ class DeltaDeepITMBot:
             spot = df_15m['close'].iloc[-1]
             
             today_date = now_ist.date()
-            bot_trades_count = (1 if self.last_ob_trade_date == today_date else 0) + (1 if self.last_rev_trade_date == today_date else 0)
+            bot_trades_count = len(self.today_trades) if self.daily_trade_date == today_date else 0
             
             report = (
                 f"📊 PICHLE 12-16 GHANTO KA DETAILED AUDIT:\n"
@@ -340,16 +349,18 @@ class DeltaDeepITMBot:
                     report = self.generate_audit_status_report()
                     send_telegram(report)
                 else:
-                    today_date = datetime.datetime.now(datetime.timezone.utc).date()
-                    ob_done = "1 Done" if self.last_ob_trade_date == today_date else "0 Done (Ready)"
-                    rev_done = "1 Done" if self.last_rev_trade_date == today_date else "0 Done (Ready)"
+                    now_ist = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)
+                    today_date = now_ist.date()
+                    is_trap = now_ist.hour in TRAP_HOURS_IST
+                    today_count = len(self.today_trades) if self.daily_trade_date == today_date else 0
+                    today_pnl_str = f"${self.today_pnl:+,.2f} USD" if self.daily_trade_date == today_date else "$0.00 USD"
                     send_telegram(
                         f"💰 TODAY'S PNL REPORT ({today_str})\n"
                         f"------------------------------------\n"
                         f"Active Trade:    None (IDLE)\n"
-                        f"Reversal Quota:  {rev_done}\n"
-                        f"OB+FVG Quota:    {ob_done}\n"
-                        f"Status:          Bot waiting for 15m confirmation to trade.\n"
+                        f"Today's Trades:  {today_count} Executed\n"
+                        f"Today's Net PnL: {today_pnl_str}\n"
+                        f"Hourly Window:   {'🛑 Trap Hour (Protected)' if is_trap else '🟢 Active Scanning Window'}\n"
                         f"Verified Net:    +$44,999.22 USD (Audited CSV)"
                     )
                 return
@@ -392,19 +403,18 @@ class DeltaDeepITMBot:
         if not trade_type:
             return
 
-        # DUAL-QUOTA ENFORCEMENT:
+        # TRADE COOLDOWN & REVERSAL PRIORITY (100% Aligned with +$45k 594-Trade Backtest):
+        # Governed strictly by 7 Trap Hours + Active Trade Cooldown (No artificial 1-per-day lock!)
         if setup_type == 'OB_FVG':
-            if self.last_ob_trade_date == today_date:
-                return  # Daily OB+FVG quota already used
             if self.state != "IDLE":
-                return  # Can't enter if already in an active trade
+                return  # Can't enter OB+FVG while any trade is actively open
 
         elif setup_type == 'REVERSAL':
-            if self.last_rev_trade_date == today_date:
-                return  # Daily reversal quota already used
-            # Reversal Priority: Reversal is NOT blocked if an OB+FVG trade was completed earlier today!
+            # Reversal Priority: If an OB+FVG trade is currently active, close it to prioritize 81% WR Reversal!
             if self.state != "IDLE":
-                print("[REVERSAL PRIORITY] Reversal formed while trade active! Closing previous trade to prioritize Reversal...")
+                if self.active_trade.get('setup_type') == 'REVERSAL':
+                    return  # Can't enter if another Reversal is currently active
+                print("[REVERSAL PRIORITY] High-probability Reversal formed while OB trade active! Closing OB trade to prioritize Reversal...")
                 curr_open = float(c_15m[-1]['close'])
                 self._close_position(curr_open, "REVERSED_BY_SMC_SWEEP", now_ist)
 
@@ -481,11 +491,17 @@ class DeltaDeepITMBot:
                 pass
         filled_size = float(order_result.get('size', int(round(trade_size * 1000)))) / 1000.0
 
-        # Update Quota Tracker only upon verified execution
-        if setup_type == 'OB_FVG':
-            self.last_ob_trade_date = today_date
-        elif setup_type == 'REVERSAL':
-            self.last_rev_trade_date = today_date
+        # Update Daily Trade History & Stats
+        if self.daily_trade_date != today_date:
+            self.daily_trade_date = today_date
+            self.today_trades = []
+            self.today_pnl = 0.0
+        self.today_trades.append({
+            "symbol": symbol,
+            "setup": setup_type,
+            "type": trade_type,
+            "time": now_ist.strftime("%H:%M:%S IST")
+        })
 
         self.state = "IN_TRADE_LEG1"
         self.active_trade = {
@@ -634,6 +650,7 @@ class DeltaDeepITMBot:
         spot_exit = self.client.get_spot_price(SYMBOL_SPOT)
         fees = (t['btc_spot_entry'] + spot_exit) * t['size'] * 0.0001
         net_pnl = round(gross_pnl - fees, 2)
+        self.today_pnl += net_pnl
 
         icon = "🟢" if net_pnl >= 0 else "🔴"
         msg = (
@@ -650,8 +667,14 @@ class DeltaDeepITMBot:
 
     def _send_status_heartbeat(self, now_ts: int, now_dt: datetime.datetime, now_ist: datetime.datetime):
         today_date = now_ist.date()
-        ob_status = "1 / 1 (Done)" if self.last_ob_trade_date == today_date else "0 / 1 (Ready)"
-        rev_status = "1 / 1 (Done)" if self.last_rev_trade_date == today_date else "0 / 1 (Ready - Never Blocked)"
+        is_trap = now_ist.hour in TRAP_HOURS_IST
+        day_name = now_ist.strftime("%A")
+
+        rev_status = "⚠️ Skipped (Saturday)" if day_name in SKIP_DAYS_REVERSAL else ("🛑 Blocked (Trap Hour)" if is_trap else "🟢 Active & Ready")
+        ob_status = "⚠️ Skipped (Weekend)" if day_name in SKIP_DAYS_OB_FVG else ("🛑 Blocked (Trap Hour)" if is_trap else "🟢 Active & Ready")
+
+        today_count = len(self.today_trades) if self.daily_trade_date == today_date else 0
+        today_pnl_str = f"${self.today_pnl:+,.2f} USD" if self.daily_trade_date == today_date else "$0.00 USD"
 
         if self.state in ["IN_TRADE_LEG1", "IN_TRADE_RUNNER"]:
             t = self.active_trade
@@ -673,18 +696,21 @@ class DeltaDeepITMBot:
                 f"Active SL: ${t['sl_prem']:,.2f} | Target: ${t['tp1_prem']:,.2f}\n"
                 f"Trailing: {'ACTIVE' if t['trailing_active'] else 'Waiting (+200 pts)'}\n"
                 f"------------------------------------\n"
-                f"Daily Quotas: OB: {ob_status} | REV: {rev_status}\n"
+                f"Today's Trades: {today_count} taken | PnL: {today_pnl_str}\n"
+                f"Priority 1: {rev_status} | Priority 2: {ob_status}\n"
                 f"Time: {now_ist.strftime('%H:%M:%S IST')}"
             )
         else:
             spot_p = self.client.get_spot_price(SYMBOL_SPOT)
+            window_msg = "🛑 TRAP HOUR (Safety Lock)" if is_trap else "🟢 ACTIVE TRADING WINDOW"
             report = (
                 f"💓 DELTA BOT HEARTBEAT\n"
                 f"------------------------------------\n"
-                f"Status: SCANNING FOR SETUPS\n"
+                f"Market Window: {window_msg}\n"
                 f"BTC Spot: ${spot_p:,.1f}\n"
                 f"Priority 1 (Reversal): {rev_status}\n"
                 f"Priority 2 (OB+FVG):   {ob_status}\n"
+                f"Today's Trades: {today_count} taken | PnL: {today_pnl_str}\n"
                 f"Time: {now_ist.strftime('%d-%b-%Y %H:%M:%S IST')}"
             )
         send_telegram(report)
