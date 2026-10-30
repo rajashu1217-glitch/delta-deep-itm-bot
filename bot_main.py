@@ -20,7 +20,7 @@ from config import (
     TRAP_HOURS_IST, SKIP_DAYS_REVERSAL, SKIP_DAYS_OB_FVG
 )
 from delta_client import DeltaClient
-from strategy import evaluate_market_setup, find_best_contract, calculate_swing_sl
+from strategy import evaluate_market_setup, find_best_contract, find_candidate_contracts, calculate_swing_sl
 from indicators import calculate_ema, get_liquidity_levels
 
 TELEGRAM_KEYBOARD = {
@@ -425,71 +425,94 @@ class DeltaDeepITMBot:
         # Calculate Price Action Swing / OB Stop Loss
         sl_dist = calculate_swing_sl(df_15m, trade_type, spot_open, buffer=30.0, custom_sl=custom_sl)
 
-        # Fetch active Delta Exchange options
+        # Fetch active Delta Exchange options & candidate contracts
         options = self.client.get_all_option_products()
-        contract = find_best_contract(spot_open, trade_type, setup_type, options, now_dt)
-        if not contract:
+        candidate_contracts = find_candidate_contracts(spot_open, trade_type, setup_type, options, now_dt, limit=4)
+        if not candidate_contracts:
             print("[Error] No matching option contract found on Delta Exchange.")
             return
 
-        symbol = contract['symbol']
-        prod_id = contract['id']
-        strike = float(contract.get('strike_price', 0))
+        executed_contract = None
+        executed_order_res = None
+        executed_trade_size = FIXED_SIZE_BTC
+        executed_premium = 0.0
+        rejection_reasons = []
 
-        opt_candles = self.client.get_candles(f"MARK:{symbol}", resolution="1m", start_ts=now_ts - 180, end_ts=now_ts)
-        entry_premium = float(opt_candles[-1]['close']) if opt_candles else float(contract.get('mark_price', 0))
+        # Multi-Strike Smart Fallback: If top strike breaches Max OI, immediately retry next strike!
+        for c_idx, contract in enumerate(candidate_contracts):
+            symbol = contract['symbol']
+            prod_id = contract['id']
+            strike = float(contract.get('strike_price', 0))
 
-        # Dynamic Lot Sizing & Delta Margin Verification
-        trade_size = FIXED_SIZE_BTC
-        if not self.client.dry_run:
-            avail_usd = self.client.get_available_usd_balance()
-            req_cost = trade_size * entry_premium
-            if req_cost > avail_usd * 0.85:
-                # Dynamic scale down to 80% of available balance to guarantee order fill
-                max_safe_btc = round((avail_usd * 0.80) / entry_premium, 2)
-                if max_safe_btc >= 0.01:
-                    print(f"[MARGIN AUTO-SCALE] Available USD: ${avail_usd:,.2f} | Requested: {trade_size} BTC (${req_cost:,.2f}) -> Auto-scaled to safe size: {max_safe_btc} BTC (${max_safe_btc * entry_premium:,.2f})")
-                    trade_size = max_safe_btc
+            opt_candles = self.client.get_candles(f"MARK:{symbol}", resolution="1m", start_ts=now_ts - 180, end_ts=now_ts)
+            entry_premium = float(opt_candles[-1]['close']) if opt_candles else float(contract.get('mark_price', 0))
+
+            # Dynamic Lot Sizing & Delta Margin Verification
+            trade_size = FIXED_SIZE_BTC
+            if not self.client.dry_run:
+                avail_usd = self.client.get_available_usd_balance()
+                req_cost = trade_size * entry_premium
+                if req_cost > avail_usd * 0.85:
+                    max_safe_btc = round((avail_usd * 0.80) / entry_premium, 2)
+                    if max_safe_btc >= 0.01:
+                        print(f"[MARGIN AUTO-SCALE] Available USD: ${avail_usd:,.2f} | Requested: {trade_size} BTC -> Safe size: {max_safe_btc} BTC (${max_safe_btc * entry_premium:,.2f})")
+                        trade_size = max_safe_btc
+                    else:
+                        print(f"[SKIP STRIKE] Insufficient balance for {symbol} (${entry_premium:,.2f})")
+                        rejection_reasons.append(f"{symbol} (Insufficient margin)")
+                        continue
+
+            print(f"[ORDER ATTEMPT {c_idx+1}/{len(candidate_contracts)}] Trying {symbol} (Strike ${strike:,.0f} | Size: {trade_size} BTC)...")
+            order_res = self.client.place_order(product_id=prod_id, size=trade_size, side="buy", order_type="market_order")
+            print(f"[ORDER RESPONSE] {symbol} | Response: {order_res}")
+
+            if order_res and order_res.get('success', False):
+                executed_contract = contract
+                executed_order_res = order_res
+                executed_trade_size = trade_size
+                executed_premium = entry_premium
+                break
+            else:
+                err_code = order_res.get('error', {}).get('code', 'Unknown Error') if order_res else "No Response"
+                err_ctx = str(order_res.get('error', {}).get('context', '')) if order_res else ""
+                rejection_reasons.append(f"{symbol} ({err_code})")
+
+                # If Delta rejected due to Max OI or reduce-only, fallback immediately to next strike!
+                if 'max_oi_breached' in err_ctx or 'only_reduce_only_orders_allowed' in err_code:
+                    fallback_alert = f"⚠️ Delta Strike {symbol} Open Interest full (max_oi_breached). Trying next best strike..."
+                    print(f"[OI FALLBACK] {fallback_alert}")
+                    send_telegram(fallback_alert)
+                    time.sleep(1)
+                    continue
                 else:
-                    err_msg = (
-                        f"❌ TRADE ABORTED: Insufficient Margin on Delta!\n"
-                        f"Symbol: {symbol}\n"
-                        f"Available Cash: ${avail_usd:,.2f} USD\n"
-                        f"Minimum Required: ${entry_premium * 0.01:,.2f} USD\n"
-                        f"Please add funds to your Delta account."
-                    )
-                    print(f"[INSUFFICIENT BALANCE] {err_msg}")
-                    send_telegram(err_msg)
-                    return
+                    # Non-OI fatal error, log and stop
+                    print(f"[ORDER FATAL ERROR] {symbol}: {err_code} {err_ctx}")
+                    break
 
-        # Place Order on Delta Exchange
-        order_res = self.client.place_order(product_id=prod_id, size=trade_size, side="buy", order_type="market_order")
-        print(f"[ORDER PLACED] {symbol} | Response: {order_res}")
-
-        # Strict Verification: Delta MUST return success=True
-        if not order_res or not order_res.get('success', False):
-            err_code = order_res.get('error', {}).get('code', 'Unknown Error') if order_res else "No Response"
-            err_ctx = order_res.get('error', {}).get('context', {}) if order_res else {}
+        if not executed_contract:
             err_msg = (
-                f"❌ DELTA REJECTED ORDER!\n"
-                f"Symbol: {symbol}\n"
-                f"Reason: {err_code}\n"
-                f"Details: {err_ctx}\n"
+                f"❌ DELTA REJECTED ALL CANDIDATE STRIKES!\n"
+                f"Attempted Strikes: {', '.join(rejection_reasons)}\n"
                 f"Trade was NOT entered. Virtual tracking aborted."
             )
-            print(f"[ORDER REJECTED] {err_msg}")
+            print(f"[ALL ORDERS REJECTED] {err_msg}")
             send_telegram(err_msg)
             return
 
+        symbol = executed_contract['symbol']
+        prod_id = executed_contract['id']
+        strike = float(executed_contract.get('strike_price', 0))
+        entry_premium = executed_premium
+
         # Fetch actual executed fill price and lot size from Delta response
-        order_result = order_res.get('result', {})
+        order_result = executed_order_res.get('result', {})
         avg_fill = order_result.get('average_fill_price')
         if avg_fill:
             try:
                 entry_premium = float(avg_fill)
             except Exception:
                 pass
-        filled_size = float(order_result.get('size', int(round(trade_size * 1000)))) / 1000.0
+        filled_size = float(order_result.get('size', int(round(executed_trade_size * 1000)))) / 1000.0
 
         # Update Daily Trade History & Stats
         if self.daily_trade_date != today_date:
