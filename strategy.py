@@ -172,19 +172,20 @@ def calculate_option_delta(spot: float, strike: float, dte_days: float, is_call:
     d1 = (np.log(spot / strike) + 0.5 * iv**2 * T) / (iv * np.sqrt(T))
     return float(norm_cdf(d1)) if is_call else float(norm_cdf(d1) - 1.0)
 
-def find_best_contract(spot_price: float, trade_type: str, setup_type: str, all_options: list, entry_dt: datetime.datetime):
+def find_candidate_contracts(spot_price: float, trade_type: str, setup_type: str, all_options: list, entry_dt: datetime.datetime, limit: int = 4) -> list:
     """
-    Intelligent Expiry & Strike Selector matching Delta Exchange Listed Products:
+    Intelligent Expiry & Multi-Strike Selector matching Delta Exchange Listed Products:
     - 1 DTE deep ITM (~0.85 Delta) for maximum responsiveness and minimal theta decay.
     - Avoids expired contracts: If after 17:15 IST, skips today's settlement and targets tomorrow/Monday.
+    - Ranks strikes by closeness to 0.85 Delta, prioritizing Deeper ITM (0.85 -> 0.90) over shallower.
+    - Returns top ranked candidate contracts so bot can fallback if one strike breaches Delta's Max OI limit.
     """
     is_call = (trade_type == 'BUY_CALL')
     contract_type = 'call_options' if is_call else 'put_options'
-    target_d = TARGET_DELTA if is_call else -TARGET_DELTA
 
     eligible_options = [p for p in all_options if p.get('contract_type') == contract_type]
     if not eligible_options:
-        return None
+        return []
 
     # Group options by settlement expiration date
     exp_groups = {}
@@ -217,7 +218,7 @@ def find_best_contract(spot_price: float, trade_type: str, setup_type: str, all_
             continue
 
     if not exp_groups:
-        return None
+        return []
 
     sorted_expiries = sorted(exp_groups.values(), key=lambda x: x['dte'])
 
@@ -226,31 +227,45 @@ def find_best_contract(spot_price: float, trade_type: str, setup_type: str, all_
     if not candidate_expiries:
         candidate_expiries = sorted_expiries
 
-    # Find liquid strike closest to Delta 0.85
-    for exp_info in candidate_expiries:
+    ranked_products = []
+    # Rank within candidate expiries (nearest target expiry first)
+    for exp_info in candidate_expiries[:2]:
         dte = exp_info['dte']
-        best_prod = None
-        best_diff = 999.0
-
+        exp_candidates = []
         for p in exp_info['products']:
             strike = float(p.get('strike_price', 0))
             if strike <= 0:
                 continue
             delta = calculate_option_delta(spot_price, strike, dte, is_call)
-            diff = abs(delta - target_d)
+            delta_mag = abs(delta)
             
             # Deep ITM range: 0.75 to 0.95
-            in_range = (0.75 <= delta <= 0.95) if is_call else (-0.95 <= delta <= -0.75)
-            if in_range and diff < best_diff:
-                best_diff = diff
-                best_prod = p
+            if 0.75 <= delta_mag <= 0.95:
+                diff = abs(delta_mag - TARGET_DELTA)
+                # Prioritize deeper ITM (0.85 -> 0.95) over shallower (0.75 -> 0.85) to minimize theta decay
+                score = diff if delta_mag >= TARGET_DELTA else diff * 1.35
+                exp_candidates.append({
+                    'product': p,
+                    'symbol': p.get('symbol'),
+                    'strike': strike,
+                    'delta': delta,
+                    'delta_mag': delta_mag,
+                    'score': score
+                })
+        exp_candidates.sort(key=lambda x: x['score'])
+        ranked_products.extend([x['product'] for x in exp_candidates[:limit]])
+        if len(ranked_products) >= limit:
+            break
 
-        if best_prod is not None:
-            exp_str = exp_info['settle_dt'].strftime('%d-%b %H:%M UTC')
-            print(f"[Contract Selected] {best_prod.get('symbol')} | Setup: {setup_type} | Expiry: {exp_str} ({exp_info['dte']:.1f} DTE) | Strike: ${best_prod.get('strike_price')}")
-            return best_prod
+    if ranked_products:
+        return ranked_products[:limit]
 
-    # Fallback to nearest valid strike
+    # Fallback to nearest valid strike if no candidate in 0.75-0.95 range
     nearest_exp = candidate_expiries[0]
     best_prod = min(nearest_exp['products'], key=lambda p: abs(float(p.get('strike_price', 0)) - (spot_price * (0.90 if is_call else 1.10))))
-    return best_prod
+    return [best_prod]
+
+def find_best_contract(spot_price: float, trade_type: str, setup_type: str, all_options: list, entry_dt: datetime.datetime):
+    """Wrapper returning top candidate contract for backwards compatibility."""
+    cands = find_candidate_contracts(spot_price, trade_type, setup_type, all_options, entry_dt, limit=1)
+    return cands[0] if cands else None
