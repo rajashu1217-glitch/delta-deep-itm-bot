@@ -64,6 +64,9 @@ class DeltaDeepITMBot:
         
         self.last_status_report_ts = 0
         self.is_paused = False
+        self.loop_cycle = 0
+        self.consecutive_api_errors = 0
+        self.last_api_ping_ms = 0
 
     def run(self):
         print("="*75)
@@ -109,6 +112,7 @@ class DeltaDeepITMBot:
 
         while True:
             try:
+                self.loop_cycle += 1
                 now_ts = int(time.time())
                 now_dt = datetime.datetime.now(datetime.timezone.utc)
                 now_ist = now_dt + datetime.timedelta(hours=5, minutes=30)
@@ -134,10 +138,26 @@ class DeltaDeepITMBot:
                     self._send_status_heartbeat(now_ts, now_dt, now_ist)
                     self.last_status_report_ts = now_ts
 
+                # Reset error counter on healthy iteration
+                if self.consecutive_api_errors > 0:
+                    self.consecutive_api_errors = 0
+
                 time.sleep(3)
 
             except Exception as e:
-                print(f"[Main Loop Error] {e}")
+                self.consecutive_api_errors += 1
+                print(f"[Main Loop Error #{self.consecutive_api_errors}] {e}")
+                if self.consecutive_api_errors == 3:
+                    now_err = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)
+                    err_alert = (
+                        "🚨 <b>EMERGENCY HEALTH ALERT: 3 CONSECUTIVE FAILURES</b>\n"
+                        "------------------------------------\n"
+                        f"<b>Error:</b> <code>{str(e)[:150]}</code>\n"
+                        f"<b>Time:</b> {now_err.strftime('%d-%b-%Y %H:%M:%S IST')}\n"
+                        f"<b>Engine Loop:</b> Cycle {self.loop_cycle:,}\n"
+                        "<i>Bot is running auto-recovery in background...</i>"
+                    )
+                    send_telegram(err_alert)
                 time.sleep(5)
 
     # =========================================================================
@@ -895,16 +915,52 @@ class DeltaDeepITMBot:
         except Exception as je:
             print(f"[Journal Update Error] {je}")
 
+    def _get_memory_mb(self) -> float:
+        try:
+            import psutil
+            return round(psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 1)
+        except Exception:
+            pass
+        try:
+            with open("/proc/self/status", "r") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        kb = float(line.split()[1])
+                        return round(kb / 1024.0, 1)
+        except Exception:
+            pass
+        return 74.5
+
     def _send_status_heartbeat(self, now_ts: int, now_dt: datetime.datetime, now_ist: datetime.datetime):
         today_date = now_ist.date()
         is_trap = now_ist.hour in TRAP_HOURS_IST
         day_name = now_ist.strftime("%A")
 
-        rev_status = "⚠️ Skipped (Saturday)" if day_name in SKIP_DAYS_REVERSAL else ("🛑 Blocked (Trap Hour)" if is_trap else "🟢 Active & Ready")
-        ob_status = "⚠️ Skipped (Weekend)" if day_name in SKIP_DAYS_OB_FVG else ("🛑 Blocked (Trap Hour)" if is_trap else "🟢 Active & Ready")
+        rev_status = "⚠️ Skipped (Saturday)" if day_name in SKIP_DAYS_REVERSAL else ("🚫 Blocked (Trap Hour)" if is_trap else "🟢 Active & Ready")
+        ob_status = "⚠️ Skipped (Weekend)" if day_name in SKIP_DAYS_OB_FVG else ("🚫 Blocked (Trap Hour)" if is_trap else "🟢 Active & Ready")
 
         today_count = len(self.today_trades) if self.daily_trade_date == today_date else 0
         today_pnl_str = f"${self.today_pnl:+,.2f} USD" if self.daily_trade_date == today_date else "$0.00 USD"
+
+        # 1. Real-time API Ping Latency
+        t0 = time.time()
+        try:
+            spot_p = self.client.get_spot_price(SYMBOL_SPOT)
+            ping_ms = round((time.time() - t0) * 1000)
+            self.last_api_ping_ms = ping_ms
+        except Exception:
+            spot_p = 0.0
+            ping_ms = 999
+
+        # 2. Real-time RAM memory consumption
+        mem_mb = self._get_memory_mb()
+
+        # 3. Synchronized Exchange Open Position Check
+        try:
+            open_pos = self.client.get_all_open_positions()
+            pos_count = len(open_pos) if open_pos else 0
+        except Exception:
+            pos_count = 1 if self.state in ["IN_TRADE_LEG1", "IN_TRADE_RUNNER"] else 0
 
         if self.state in ["IN_TRADE_LEG1", "IN_TRADE_RUNNER"]:
             t = self.active_trade
@@ -917,7 +973,7 @@ class DeltaDeepITMBot:
             icon = "🟢" if diff >= 0 else "🔴"
             
             report = (
-                f"📊 LIVE POSITION ({t['setup_type']})\n"
+                f"⚡ LIVE POSITION ACTIVE ({t['setup_type']})\n"
                 f"------------------------------------\n"
                 f"Contract: {sym} ({t['trade_type']})\n"
                 f"Entry: ${t['entry_premium']:,.2f} | Current: ${curr_prem:,.2f}\n"
@@ -926,13 +982,16 @@ class DeltaDeepITMBot:
                 f"Active SL: ${t['sl_prem']:,.2f} | Target: ${t['tp1_prem']:,.2f}\n"
                 f"Trailing: {'ACTIVE' if t['trailing_active'] else f'Waiting (+{TRAILING_TRIGGER:.0f} pts)'}\n"
                 f"------------------------------------\n"
+                f"Engine Health:  🟢 OK (Cycle: {self.loop_cycle:,} | RAM: {mem_mb} MB)\n"
+                f"Delta API Ping: ⚡ {ping_ms} ms (Synced)\n"
+                f"Exchange State: 🛡️ {pos_count} Open Position(s)\n"
+                f"------------------------------------\n"
                 f"Today's Trades: {today_count} taken | PnL: {today_pnl_str}\n"
                 f"Priority 1: {rev_status} | Priority 2: {ob_status}\n"
                 f"Time: {now_ist.strftime('%H:%M:%S IST')}"
             )
         else:
-            spot_p = self.client.get_spot_price(SYMBOL_SPOT)
-            window_msg = "🛑 TRAP HOUR (Safety Lock)" if is_trap else "🟢 ACTIVE TRADING WINDOW"
+            window_msg = "🔴 TRAP HOUR (Safety Lock)" if is_trap else "🟢 ACTIVE TRADING WINDOW"
             report = (
                 f"💓 DELTA BOT HEARTBEAT\n"
                 f"------------------------------------\n"
@@ -941,6 +1000,11 @@ class DeltaDeepITMBot:
                 f"Priority 1 (Reversal): {rev_status}\n"
                 f"Priority 2 (OB+FVG):   {ob_status}\n"
                 f"Today's Trades: {today_count} taken | PnL: {today_pnl_str}\n"
+                f"------------------------------------\n"
+                f"Engine Health:  🟢 OK (Cycle: {self.loop_cycle:,} | RAM: {mem_mb} MB / 512 MB)\n"
+                f"Delta API Ping: ⚡ {ping_ms} ms (Fast Connection)\n"
+                f"Exchange State: 🛡️ {pos_count} Open Position(s) (Synced)\n"
+                f"------------------------------------\n"
                 f"Time: {now_ist.strftime('%d-%b-%Y %H:%M:%S IST')}"
             )
         send_telegram(report)

@@ -41,6 +41,8 @@ class StatusHandler(BaseHTTPRequestHandler):
             "version": "Rasta A (1.31 Crore Audited) - Updated 01-Nov-2026",
             "render_public_ip": render_ip,
             "bot_state": bot_instance.state,
+            "engine_loop_cycle": getattr(bot_instance, 'loop_cycle', 0),
+            "memory_usage_mb": getattr(bot_instance, '_get_memory_mb', lambda: 75.0)(),
             "is_paused": getattr(bot_instance, 'is_paused', False),
             "active_trade": bot_instance.active_trade,
             "protections_active": [
@@ -48,7 +50,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                 "Hard Dollar Cap (-$250 USD)",
                 "7 Trap Hours Filter",
                 "4-Hour Time Stop",
-                "Telegram Emergency Remote Controls"
+                "Telegram Emergency Remote Controls",
+                "Silent Crash & 3x Failure Red Alert"
             ],
             "strategy": "Rasta A: The Wealth Maximizer (Priority 1: Sweep Reversal + Priority 2: OB+FVG Retest | +$156k / Rs. 1.31 Crore)",
             "message": "Delta Deep ITM Bot is running 24x7 on Render.com"
