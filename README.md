@@ -3,6 +3,7 @@
 ### 100% Audited Real Performance: +$156,314.70 USD Net Profit (₹1,31,30,434.80 INR / 1.31 Crore)
 ### 1,278 Total Trades | 79.50% Win Rate | Profit Factor: 5.94 | Max Drawdown: -$1,097.61 USD (10.9%)
 ### Verified via Official Delta Exchange India API (`api.india.delta.exchange`) & AlgoTest Simulator
+### 🛡️ Institutional 3-Layer Protections Active | Last Updated: 01-Nov-2026
 
 ---
 
@@ -44,6 +45,24 @@ Yeh bot **Delta Exchange India** par automated institutional Deep ITM option tra
 
 ---
 
+## 🛡️ Multi-Layer Institutional Protections (Added 01-Nov-2026)
+Aapke capital ko market crashes aur cloud offline hone se bachane ke liye yeh **4 security layers** active hain:
+
+1. **Exchange-Native Hard Stop-Loss (GTC Failsafe SL):**
+   - Entry order fill hote hi, bot Delta Exchange ke servers par direct ek **GTC Stop-Market Order** place karta hai.
+   - Agar Render cloud offline ho jaye, internet cut jaye ya laptop band ho jaye — **Delta Exchange ka server khud aapke capital ko bacha lega!**
+2. **Hard Dollar Drawdown Cap (-$250 USD Circuit Breaker):**
+   - Kisi trade me sudden freak flash crash aane par, agar loss **-$250 USD** hit karta hai to bina kisi candle close ka intezar kiye instant market-liquidation fire ho jati hai.
+3. **Telegram Emergency Remote Controls:**
+   - Phone se directly trade manage karne ke liye 1-tap buttons:
+     - `🚨 Panic Close` (`/panic_close`): Saari active positions turant close kare aur pending orders cancel kare.
+     - `⏸️ Pause Bot` (`/pause_bot`): Naye trades lena temporarily rok de.
+     - `▶️ Resume Bot` (`/resume_bot`): Wapas normal trading resume kare.
+4. **UptimeRobot 24x7 Cloud Watchdog:**
+   - External ping monitor `https://delta-btc-deep-itm-bot.onrender.com` ko har 5 minute me ping karke Render ko 24x7 jaagte rakhta hai aur server drop hone par alert bhejta hai.
+
+---
+
 ## 📊 Audited Performance Summary (26 Months: Sept 2024 - Oct 2026)
 | Metric | Priority 1 (Reversal) | Priority 2 (OB+FVG) | **Combined (Rasta A)** |
 | :--- | :--- | :--- | :--- |
@@ -59,25 +78,29 @@ Yeh bot **Delta Exchange India** par automated institutional Deep ITM option tra
 
 ---
 
-## 🛠️ Files & Folders
-* `bot_main.py`: Core trading loop with dual-quota state machine & live Telegram diagnostics.
+## 🛠️ Files & Architecture
+* `bot_main.py`: Core trading loop with dual-quota state machine, native GTC SL order, and panic remote controls.
 * `strategy.py`: SMC Order Block + FVG detection, Reversal sweeps, Delta scanner, swing SL calculator.
-* `config.py`: Centralized configuration, trap hours, trading parameters, and credentials.
+* `config.py`: Centralized configuration, trap hours, -$250 loss cap, and API credentials.
 * `indicators.py`: 20 EMA, Asian Range (05:30 - 13:30 IST), and PDH/PDL liquidity levels.
-* `delta_client.py`: Delta Exchange REST API client (India Production & Testnet).
-* `trade_journal.py`: Automatic Excel & CSV journal logger with multi-sheet analytics.
-* `server.py`: Lightweight web server with auto-ping keep-alive for Render.com 24x7 hosting.
+* `delta_client.py`: Delta Exchange REST API client with Stop-Market order support.
+* `trade_journal.py`: Automatic Excel (`Trade_Journal_Master.xlsx`) & CSV logger with Telegram dispatch.
+* `server.py`: Web Health Server with UptimeRobot monitor integration and auto-ping keep-alive.
 * `render.yaml`: Render deployment configuration.
 * `start_bot.bat`: Windows one-click local runner.
-* `requirements.txt`: Python package dependencies.
+* `requirements.txt`: Python package dependencies (including `openpyxl`).
 * `.env`: API keys and Telegram credentials.
 
 ---
 
 ## 📱 Telegram Interactive Controls
 Bot supports Telegram commands & interactive keyboard:
-* `/status` - Live bot status, daily quota, open positions, active OB/FVG zones
-* `/rules` - Show Rasta A 1.31 Crore verified rules & architecture
-* `/pnl` - Today's executed trades and live PnL report
-* `/levels` - Current Asian high/low, PDH/PDL and trend audit
-* `/report` - 12-hour candle audit explaining why/when setups triggered
+* `📊 Live Status` (`/status`) - Live bot status, daily quota, open positions, active OB/FVG zones
+* `🔍 12H Trade Audit` (`/audit`) - 12-hour candle audit explaining why/when setups triggered
+* `❓ Kitna Trade Bana / Kyun?` - Natural language trade diagnosis
+* `💰 Live PnL` (`/pnl`) - Today's executed trades and live PnL report
+* `🎯 Levels & Trend` (`/levels`) - Current Asian high/low, PDH/PDL and trend audit
+* `📒 Master Excel Journal` - Instantly sends updated Excel journal to Telegram
+* `🚨 Panic Close` (`/panic_close`) - Emergency liquidate all open positions on Delta
+* `⏸️ Pause Bot` (`/pause_bot`) - Stop scanning new trades
+* `▶️ Resume Bot` (`/resume_bot`) - Resume normal trading
