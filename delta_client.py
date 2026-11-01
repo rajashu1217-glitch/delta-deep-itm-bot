@@ -170,3 +170,40 @@ class DeltaClient:
             elif isinstance(result, list) and len(result) > 0:
                 return result[0]
         return {}
+
+    def get_all_open_positions(self) -> list:
+        """Fetch all active open positions on Delta account for reboot reconciliation."""
+        if self.dry_run:
+            return []
+        # Query margined positions
+        path = "/v2/positions/margined"
+        res = self._request('GET', path, auth=True)
+        if res and res.get('success', False):
+            positions = res.get('result', [])
+            if isinstance(positions, list):
+                return [p for p in positions if int(p.get('size', 0)) != 0]
+        
+        # Fallback to general positions endpoint
+        path2 = "/v2/positions"
+        res2 = self._request('GET', path2, auth=True)
+        if res2 and res2.get('success', False):
+            positions2 = res2.get('result', [])
+            if isinstance(positions2, list):
+                return [p for p in positions2 if int(p.get('size', 0)) != 0]
+            elif isinstance(positions2, dict) and int(positions2.get('size', 0)) != 0:
+                return [positions2]
+        return []
+
+    def get_open_orders(self, product_id: int = None) -> list:
+        """Fetch active open/trigger orders from Delta."""
+        if self.dry_run:
+            return []
+        path = "/v2/orders"
+        params = {"state": "open"}
+        if product_id:
+            params["product_id"] = product_id
+        res = self._request('GET', path, params=params, auth=True)
+        if res and res.get('success', False):
+            orders = res.get('result', [])
+            return orders if isinstance(orders, list) else []
+        return []

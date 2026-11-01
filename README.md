@@ -46,19 +46,22 @@ Yeh bot **Delta Exchange India** par automated institutional Deep ITM option tra
 ---
 
 ## 🛡️ Multi-Layer Institutional Protections (Added 01-Nov-2026)
-Aapke capital ko market crashes aur cloud offline hone se bachane ke liye yeh **4 security layers** active hain:
+Aapke capital ko market crashes aur cloud offline hone se bachane ke liye yeh **5 security layers** active hain:
 
-1. **Exchange-Native Hard Stop-Loss (GTC Failsafe SL):**
+1. **Startup Position Reconciliation (Reboot Safety):**
+   - Cloud container (Render) restart hone par, bot shuruwat me Delta API se poochta hai ki koi open position to nahi chhooti.
+   - Agar open trade milta hai, to bot use turant adopt karke live trailing restore kar leta hai aur koi duplicate order nahi lagata.
+2. **Exchange-Native Hard Stop-Loss (GTC Failsafe SL):**
    - Entry order fill hote hi, bot Delta Exchange ke servers par direct ek **GTC Stop-Market Order** place karta hai.
    - Agar Render cloud offline ho jaye, internet cut jaye ya laptop band ho jaye — **Delta Exchange ka server khud aapke capital ko bacha lega!**
-2. **Hard Dollar Drawdown Cap (-$250 USD Circuit Breaker):**
+3. **Hard Dollar Drawdown Cap (-$250 USD Circuit Breaker):**
    - Kisi trade me sudden freak flash crash aane par, agar loss **-$250 USD** hit karta hai to bina kisi candle close ka intezar kiye instant market-liquidation fire ho jati hai.
-3. **Telegram Emergency Remote Controls:**
+4. **Telegram Emergency Remote Controls:**
    - Phone se directly trade manage karne ke liye 1-tap buttons:
      - `🚨 Panic Close` (`/panic_close`): Saari active positions turant close kare aur pending orders cancel kare.
      - `⏸️ Pause Bot` (`/pause_bot`): Naye trades lena temporarily rok de.
      - `▶️ Resume Bot` (`/resume_bot`): Wapas normal trading resume kare.
-4. **UptimeRobot 24x7 Cloud Watchdog:**
+5. **UptimeRobot 24x7 Cloud Watchdog:**
    - External ping monitor `https://delta-btc-deep-itm-bot.onrender.com` ko har 5 minute me ping karke Render ko 24x7 jaagte rakhta hai aur server drop hone par alert bhejta hai.
 
 ---

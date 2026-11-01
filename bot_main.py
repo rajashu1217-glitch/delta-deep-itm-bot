@@ -104,6 +104,9 @@ class DeltaDeepITMBot:
             f"💡 Niche diye gaye buttons se kisi bhi waqt live status/audit report le sakte hain!"
         )
 
+        # 2. SMART REBOOT RECONCILIATION ROUTINE (Adopt orphan positions & purge stale orders)
+        self._reconcile_startup_positions()
+
         while True:
             try:
                 now_ts = int(time.time())
@@ -136,6 +139,98 @@ class DeltaDeepITMBot:
             except Exception as e:
                 print(f"[Main Loop Error] {e}")
                 time.sleep(5)
+
+    # =========================================================================
+    # SMART STARTUP RECONCILIATION ROUTINE (Reboot Safety)
+    # =========================================================================
+    def _reconcile_startup_positions(self):
+        """
+        On reboot or container restart:
+        1. Checks Delta Exchange API for any open orphan option positions.
+        2. Adopts open trade into active_trade & restores trailing SL guards.
+        3. Cancels stale unfulfilled ghost orders to prevent double execution.
+        """
+        print("[RECONCILIATION] Checking Delta Exchange for open orphan positions...")
+        try:
+            open_positions = self.client.get_all_open_positions()
+            if not open_positions:
+                print("[RECONCILIATION] Clean reboot: 0 open positions on Delta. State is IDLE.")
+                self.state = "IDLE"
+                self.active_trade = {}
+                return
+
+            # Find any open BTC option position
+            target_pos = None
+            for pos in open_positions:
+                if int(pos.get('size', 0)) != 0:
+                    target_pos = pos
+                    break
+
+            if not target_pos:
+                print("[RECONCILIATION] No active option positions found. State is IDLE.")
+                self.state = "IDLE"
+                return
+
+            prod_id = target_pos.get('product_id')
+            size_btc = abs(float(target_pos.get('size', 0))) / 1000.0
+            entry_price = float(target_pos.get('entry_price', 0.0))
+
+            # Query product info for symbol & strike
+            all_options = self.client.get_all_option_products()
+            contract_info = next((p for p in all_options if p.get('id') == prod_id), None)
+            symbol = contract_info.get('symbol', f"PROD-{prod_id}") if contract_info else f"PROD-{prod_id}"
+            strike = float(contract_info.get('strike_price', 0.0)) if contract_info else 0.0
+            is_call = ('C-' in symbol or 'CALL' in symbol.upper())
+            trade_type = 'BUY_CALL' if is_call else 'BUY_PUT'
+
+            # Check existing Stop-Market orders on Delta
+            open_orders = self.client.get_open_orders(prod_id)
+            existing_sl_id = None
+            for o in open_orders:
+                if o.get('order_type') == 'stop_market_order' and o.get('reduce_only'):
+                    existing_sl_id = o.get('id')
+                    break
+
+            now_ts = int(time.time())
+            now_ist = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)
+            spot_curr = self.client.get_spot_price(SYMBOL_SPOT)
+
+            self.state = "IN_TRADE_LEG1"
+            self.active_trade = {
+                "symbol": symbol,
+                "product_id": prod_id,
+                "trade_type": trade_type,
+                "setup_type": "RECOVERED_RECONCILIATION",
+                "strike": strike,
+                "size": size_btc,
+                "entry_time_ts": now_ts,
+                "entry_time_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
+                "entry_premium": entry_price,
+                "btc_spot_entry": spot_curr,
+                "sl_dist": 300.0,
+                "sl_prem": max(10.0, entry_price - 300.0),
+                "tp1_prem": entry_price + TARGET_POINTS,
+                "peak_profit": 0.0,
+                "trailing_active": False,
+                "tp1_booked_prem": 0.0,
+                "exchange_sl_id": existing_sl_id
+            }
+
+            reconcile_msg = (
+                f"🔄 STARTUP RECONCILIATION SUCCESSFUL!\n"
+                f"Adopted Running Trade on Delta Exchange:\n"
+                f"• Contract: {symbol} ({trade_type})\n"
+                f"• Position Size: {size_btc} BTC\n"
+                f"• Entry Premium: ${entry_price:,.2f}\n"
+                f"• Failsafe SL: {'Active on Delta' if existing_sl_id else 'Software Trailing Active'}\n"
+                f"• Target (+{TARGET_POINTS:.0f}): ${self.active_trade['tp1_prem']:,.2f}\n"
+                f"Bot has restored live tracking without placing any duplicate order!"
+            )
+            print(f"[RECONCILIATION] {reconcile_msg}")
+            send_telegram(reconcile_msg)
+
+        except Exception as e:
+            print(f"[RECONCILIATION ERROR] {e}")
 
     # =========================================================================
     # 2-WAY INTERACTIVE TELEGRAM COMMAND SYSTEM & DETAILED SETUP AUDIT

@@ -222,8 +222,8 @@ def find_candidate_contracts(spot_price: float, trade_type: str, setup_type: str
 
     sorted_expiries = sorted(exp_groups.values(), key=lambda x: x['dte'])
 
-    # Candidate Expiries: Prefer 1 DTE (or 0 DTE if >= 8h left), fallback to Weekly
-    candidate_expiries = [exp for exp in sorted_expiries if exp['hours'] >= 8.0]
+    # Candidate Expiries: Prefer 1 DTE (or 0 DTE only if >= 10h left to prevent theta decay), fallback to Weekly
+    candidate_expiries = [exp for exp in sorted_expiries if exp['hours'] >= 10.0]
     if not candidate_expiries:
         candidate_expiries = sorted_expiries
 
