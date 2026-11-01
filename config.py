@@ -61,6 +61,7 @@ FIXED_SIZE_BTC = float(os.getenv("FIXED_SIZE_BTC", "0.2"))
 SL_MIN_PTS = float(os.getenv("SL_MIN_PTS", "150.0"))        # Minimum 150 pts SL
 SL_MAX_PTS = float(os.getenv("SL_MAX_PTS", "500.0"))        # Maximum 500 pts SL
 SL_BUFFER_PTS = float(os.getenv("SL_BUFFER_PTS", "30.0"))    # 30 pts buffer past swing/OB
+MAX_LOSS_PER_TRADE_USD = float(os.getenv("MAX_LOSS_PER_TRADE_USD", "250.0")) # Hard Drawdown Circuit Breaker (-$250 USD max loss)
 
 # Target & Trailing SL (Rasta A: Wealth Maximizer Setup)
 TARGET_POINTS = float(os.getenv("TARGET_POINTS", "600.0"))        # +600 pts Target Profit

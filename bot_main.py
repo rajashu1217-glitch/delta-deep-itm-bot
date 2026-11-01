@@ -17,7 +17,8 @@ from config import (
     MAX_HOLDING_MINUTES, DRY_RUN, ENABLE_TELEGRAM, 
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, STATUS_INTERVAL_MINUTES,
     REVERSAL_EXPIRY_MODE, OB_FVG_EXPIRY_MODE,
-    TRAP_HOURS_IST, SKIP_DAYS_REVERSAL, SKIP_DAYS_OB_FVG
+    TRAP_HOURS_IST, SKIP_DAYS_REVERSAL, SKIP_DAYS_OB_FVG,
+    MAX_LOSS_PER_TRADE_USD
 )
 from delta_client import DeltaClient
 from strategy import evaluate_market_setup, find_best_contract, find_candidate_contracts, calculate_swing_sl
@@ -27,7 +28,8 @@ TELEGRAM_KEYBOARD = {
     "keyboard": [
         [{"text": "📊 Live Status"}, {"text": "🔍 12H Trade Audit"}],
         [{"text": "❓ Kitna Trade Bana / Kyun?"}, {"text": "💰 Live PnL"}],
-        [{"text": "🎯 Levels & Trend"}, {"text": "📒 Master Excel Journal"}]
+        [{"text": "🎯 Levels & Trend"}, {"text": "📒 Master Excel Journal"}],
+        [{"text": "🚨 Panic Close"}, {"text": "⏸️ Pause Bot"}, {"text": "▶️ Resume Bot"}]
     ],
     "resize_keyboard": True,
     "persistent": True
@@ -61,6 +63,7 @@ class DeltaDeepITMBot:
         self.today_pnl = 0.0
         
         self.last_status_report_ts = 0
+        self.is_paused = False
 
     def run(self):
         print("="*75)
@@ -321,6 +324,29 @@ class DeltaDeepITMBot:
                     send_telegram(f"⚠️ Journal generate karne me error: {je}")
                 return
 
+            # EMERGENCY ACTION CONTROLS: Panic Close & Remote Pause/Resume
+            if any(k in t_lower for k in ["panic", "panic_close", "/panic", "/panic_close", "close all", "close trade"]):
+                if self.state in ["IN_TRADE_LEG1", "IN_TRADE_RUNNER"]:
+                    send_telegram("🚨 PANIC CLOSE TRIGGERED! Delta Exchange par active open position turant close ki ja rahi hai...")
+                    now_dt = datetime.datetime.now(datetime.timezone.utc)
+                    now_ist = now_dt + datetime.timedelta(hours=5, minutes=30)
+                    opt_candles = self.client.get_candles(f"MARK:{self.active_trade.get('symbol')}", resolution="1m", start_ts=int(time.time()) - 180, end_ts=int(time.time()))
+                    exit_prem = float(opt_candles[-1]['close']) if opt_candles else self.active_trade.get('entry_premium', 0.0)
+                    self._close_position(exit_prem, "PANIC_CLOSE_TELEGRAM", now_ist)
+                else:
+                    send_telegram("ℹ️ Abhi koi open trade nahi hai. Bot IDLE state me hai.")
+                return
+
+            if any(k in t_lower for k in ["pause", "pause_bot", "/pause"]):
+                self.is_paused = True
+                send_telegram("⏸️ BOT PAUSED! Naye trades lena rok diya gaya hai. Existing open trade (agar hai) safely manage hota rahega.\nWapas start karne ke liye 'Resume Bot' ya /resume dabayein.")
+                return
+
+            if any(k in t_lower for k in ["resume", "resume_bot", "/resume"]):
+                self.is_paused = False
+                send_telegram("▶️ BOT RESUMED! Normal hunting mode wapas active ho gaya hai. 15m candle close par naye signals scan honge.")
+                return
+
             # 1. PRIORITY 1: User asks "Kitna trade bana / kyun nahi liya / jab se update kiya" OR clicks Audit button
             audit_triggers = [
                 "kitna trade", "kitne trade", "kyun", "kyu", "why", "trade bna", "trade bana",
@@ -398,6 +424,10 @@ class DeltaDeepITMBot:
     # SETUP SCANNER & ORDER EXECUTION
     # =========================================================================
     def _scan_and_execute_setup(self, now_ts: int, now_dt: datetime.datetime, now_ist: datetime.datetime):
+        if self.is_paused:
+            print("[BOT PAUSED] Remote pause active. Skipping setup scan.")
+            return
+
         today_date = now_ist.date()
 
         # Fetch market candles
@@ -543,6 +573,25 @@ class DeltaDeepITMBot:
         })
 
         self.state = "IN_TRADE_LEG1"
+        sl_prem_target = round(entry_premium - sl_dist, 1)
+
+        # PROTECTION 1: Exchange-Native Hard Stop-Loss (GTC Failsafe Order on Delta Exchange)
+        exchange_sl_id = None
+        try:
+            sl_res = self.client.place_order(
+                product_id=prod_id,
+                size=filled_size,
+                side="sell",
+                order_type="stop_market_order",
+                stop_price=sl_prem_target,
+                reduce_only=True
+            )
+            if sl_res and sl_res.get('success'):
+                exchange_sl_id = sl_res.get('result', {}).get('id')
+                print(f"[EXCHANGE FAILSAFE SL PLACED] Delta Order ID: {exchange_sl_id} @ ${sl_prem_target:,.1f}")
+        except Exception as se:
+            print(f"[EXCHANGE SL ERROR] {se}")
+
         self.active_trade = {
             "symbol": symbol,
             "product_id": prod_id,
@@ -555,11 +604,12 @@ class DeltaDeepITMBot:
             "entry_premium": entry_premium,
             "btc_spot_entry": spot_open,
             "sl_dist": sl_dist,
-            "sl_prem": entry_premium - sl_dist,
+            "sl_prem": sl_prem_target,
             "tp1_prem": entry_premium + TARGET_POINTS,
             "peak_profit": 0.0,
             "trailing_active": False,
-            "tp1_booked_prem": 0.0
+            "tp1_booked_prem": 0.0,
+            "exchange_sl_id": exchange_sl_id
         }
 
         msg = (
@@ -569,6 +619,7 @@ class DeltaDeepITMBot:
             f"Spot Entry: ${spot_open:,.1f}\n"
             f"Entry Premium: ${entry_premium:,.2f}\n"
             f"SL Distance: ${self.active_trade['sl_prem']:,.2f} (-{sl_dist:.0f} pts)\n"
+            f"Failsafe SL: {'✅ Placed on Delta Server' if exchange_sl_id else '⚠️ Managed via Bot Software'}\n"
             f"Target (+{TARGET_POINTS:.0f}): ${self.active_trade['tp1_prem']:,.2f}\n"
             f"Trailing SL: Auto-activates after +{TRAILING_TRIGGER:.0f} pts profit!\n"
             f"Time: {now_ist.strftime('%Y-%m-%d %H:%M:%S IST')}"
@@ -594,6 +645,15 @@ class DeltaDeepITMBot:
         running_gain = curr_high - t['entry_premium']
         if running_gain > t['peak_profit']:
             t['peak_profit'] = running_gain
+
+        # ==========================================
+        # PROTECTION 3: HARD DOLLAR DRAWDOWN CIRCUIT BREAKER (-$250 USD)
+        # ==========================================
+        unrealized_usd = (curr_close - t['entry_premium']) * t['size']
+        if unrealized_usd <= -MAX_LOSS_PER_TRADE_USD:
+            print(f"[CIRCUIT BREAKER] Hard dollar drawdown cap reached: ${unrealized_usd:.2f} <= -${MAX_LOSS_PER_TRADE_USD:.2f}! Liquidating position...")
+            self._close_position(curr_open, "CIRCUIT_BREAKER_HARD_DOLLAR_CAP", now_ist)
+            return
 
         # ==========================================
         # DYNAMIC TRAILING SL (Rasta A: Trigger at +180 pts, Offset 80 pts -> Locks +100 pts)
@@ -670,6 +730,14 @@ class DeltaDeepITMBot:
         t = self.active_trade
         remaining_size = t['size'] if self.state == "IN_TRADE_LEG1" else round(t['size'] * 0.5, 3)
         
+        # Cancel exchange-native Stop-Loss order if open on Delta server
+        if t.get('exchange_sl_id'):
+            try:
+                self.client.cancel_order(t['exchange_sl_id'], t['product_id'])
+                print(f"[EXCHANGE SL CANCELLED] Failsafe SL Order ID: {t['exchange_sl_id']} cancelled cleanly.")
+            except Exception as ce:
+                print(f"[Cancel SL Order Error] {ce}")
+
         # Safe Exit: reduce_only=True guarantees Delta will NEVER open an unintended short position!
         close_res = self.client.place_order(product_id=t['product_id'], size=remaining_size, side="sell", order_type="market_order", reduce_only=True)
         print(f"[CLOSE ORDER] {t['symbol']} | Reason: {reason} | Response: {close_res}")

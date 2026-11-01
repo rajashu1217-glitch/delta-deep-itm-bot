@@ -1,8 +1,23 @@
+# ==============================================================================
+# DELTA DEEP ITM BOT - WEB HEALTH SERVER & KEEP-ALIVE DAEMON
+# Architecture: Rasta A (The Wealth Maximizer - Rs. 1.31 Crore Audited)
+# Protections: Native GTC Hard SL | Hard -$250 Cap | Telegram Remote Controls
+# Last Updated: 01-Nov-2026
+# ==============================================================================
 import os
+import sys
 import threading
 import json
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# Force instant unbuffered line-by-line output for Render real-time logs
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 from bot_main import DeltaDeepITMBot
 
 # Initialize the Bot
@@ -23,18 +38,29 @@ class StatusHandler(BaseHTTPRequestHandler):
 
         status_data = {
             "status": "online",
+            "version": "Rasta A (1.31 Crore Audited) - Updated 01-Nov-2026",
             "render_public_ip": render_ip,
             "bot_state": bot_instance.state,
+            "is_paused": getattr(bot_instance, 'is_paused', False),
             "active_trade": bot_instance.active_trade,
-            "strategy": "BTC Deep ITM Dual-Quota Option A (BO Weekly + Reversal 1DTE)",
+            "protections_active": [
+                "Exchange-Native GTC Hard SL",
+                "Hard Dollar Cap (-$250 USD)",
+                "7 Trap Hours Filter",
+                "4-Hour Time Stop",
+                "Telegram Emergency Remote Controls"
+            ],
+            "strategy": "Rasta A: The Wealth Maximizer (Priority 1: Sweep Reversal + Priority 2: OB+FVG Retest | +$156k / Rs. 1.31 Crore)",
             "message": "Delta Deep ITM Bot is running 24x7 on Render.com"
         }
         self.wfile.write(json.dumps(status_data, indent=2).encode('utf-8'))
+        print(f"[LIVE PING] Received Health Check from {self.client_address[0]} | Bot State: {bot_instance.state}", flush=True)
 
     def do_HEAD(self):
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
+        print(f"[LIVE PING] HEAD request from {self.client_address[0]}", flush=True)
 
     def log_message(self, format, *args):
         return
