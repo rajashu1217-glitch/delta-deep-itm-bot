@@ -100,6 +100,21 @@ class DeltaClient:
             return options
         return []
 
+    def get_ticker(self, symbol: str) -> dict:
+        """Fetch real-time ticker quotes (best_bid, best_ask) from Delta Exchange."""
+        path = f"/v2/tickers/{symbol}"
+        res = self._request('GET', path, auth=False)
+        if res and res.get('success', False):
+            return res.get('result', {})
+        return {}
+
+    def get_order_status(self, order_id: str) -> dict:
+        """Fetch order details to check fill state (open, filled, closed)."""
+        if self.dry_run:
+            return {"success": True, "result": {"id": order_id, "state": "filled"}}
+        path = f"/v2/orders/{order_id}"
+        return self._request('GET', path, auth=True)
+
     # ==========================================
     # PRIVATE TRADING METHODS
     # ==========================================

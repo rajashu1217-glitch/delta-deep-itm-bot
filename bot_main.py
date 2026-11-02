@@ -18,7 +18,7 @@ from config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, STATUS_INTERVAL_MINUTES,
     REVERSAL_EXPIRY_MODE, OB_FVG_EXPIRY_MODE,
     TRAP_HOURS_IST, SKIP_DAYS_REVERSAL, SKIP_DAYS_OB_FVG,
-    MAX_LOSS_PER_TRADE_USD
+    MAX_LOSS_PER_TRADE_USD, SMART_ROUTER_MAKER_TIMEOUT_SEC
 )
 from delta_client import DeltaClient
 from strategy import evaluate_market_setup, find_best_contract, find_candidate_contracts, calculate_swing_sl
@@ -95,7 +95,7 @@ class DeltaDeepITMBot:
             tg_thread.start()
 
         send_telegram(
-            f"🤖 DELTA BOT (RASTA A: 1.31 CRORE SETUP) UPDATED & RUNNING!\n"
+            f"🤖 DELTA BOT (RASTA A: +2.10 CR / +2.40 CR VERIFIED MASTER SETUP) RUNNING!\n"
             f"Strategy: 100% Real Delta Exchange API Verified Architecture\n"
             f"• Priority 1: SMC Reversal Sweep (94.9% WR | Sun-Fri | +$31.3k USD)\n"
             f"• Priority 2: SMC Order Block + FVG Retest (77.9% WR | Mon-Fri | +$125.0k USD)\n"
@@ -624,14 +624,74 @@ class DeltaDeepITMBot:
                         continue
 
             print(f"[ORDER ATTEMPT {c_idx+1}/{len(candidate_contracts)}] Trying {symbol} (Strike ${strike:,.0f} | Size: {trade_size} BTC)...")
-            order_res = self.client.place_order(product_id=prod_id, size=trade_size, side="buy", order_type="market_order")
-            print(f"[ORDER RESPONSE] {symbol} | Response: {order_res}")
+
+            # ==========================================
+            # 3-SECOND SMART ORDER ROUTER (MODEL A -> 3s -> MODEL B)
+            # ==========================================
+            ticker_info = self.client.get_ticker(symbol)
+            quotes = ticker_info.get('quotes', {})
+            best_bid_str = quotes.get('best_bid')
+            maker_price = float(best_bid_str) if best_bid_str else entry_premium
+
+            print(f"[SMART ROUTER] Step 1: Placing MODEL A Maker Limit Order @ ${maker_price:,.2f} on {symbol} (3.0s window)...")
+            order_res = self.client.place_order(
+                product_id=prod_id, 
+                size=trade_size, 
+                side="buy", 
+                order_type="limit_order", 
+                limit_price=maker_price
+            )
+            print(f"[SMART ROUTER] Limit Response: {order_res}")
+
+            model_used = "MODEL A (MAKER LIMIT - 0 SPREAD)"
+            is_filled = False
 
             if order_res and order_res.get('success', False):
+                order_id = order_res.get('result', {}).get('id')
+                if self.client.dry_run:
+                    is_filled = True
+                elif order_id:
+                    # Wait up to SMART_ROUTER_MAKER_TIMEOUT_SEC (3.0s) for fill
+                    start_wait = time.time()
+                    while time.time() - start_wait < SMART_ROUTER_MAKER_TIMEOUT_SEC:
+                        time.sleep(0.5)
+                        st = self.client.get_order_status(order_id)
+                        if st and st.get('success', False):
+                            state = st.get('result', {}).get('state', '').lower()
+                            if state in ['filled', 'closed']:
+                                is_filled = True
+                                avg_fill = st.get('result', {}).get('average_fill_price')
+                                if avg_fill:
+                                    try:
+                                        entry_premium = float(avg_fill)
+                                    except Exception:
+                                        pass
+                                break
+
+                    if not is_filled:
+                        print(f"[SMART ROUTER] 3.0s timeout reached without fill! Switching to MODEL B (MARKET ORDER)...")
+                        self.client.cancel_order(order_id, prod_id)
+                        time.sleep(0.1)
+                        order_res = self.client.place_order(product_id=prod_id, size=trade_size, side="buy", order_type="market_order")
+                        print(f"[SMART ROUTER] Market Fallback Response: {order_res}")
+                        model_used = "MODEL B (MARKET TAKER - ZERO MISSED RUNNER)"
+                        if order_res and order_res.get('success', False):
+                            is_filled = True
+            else:
+                # Direct market fallback if limit order rejected
+                print(f"[SMART ROUTER] Limit order rejected, falling back directly to MODEL B Market Order...")
+                order_res = self.client.place_order(product_id=prod_id, size=trade_size, side="buy", order_type="market_order")
+                model_used = "MODEL B (MARKET TAKER - DIRECT FALLBACK)"
+                if order_res and order_res.get('success', False):
+                    is_filled = True
+
+            if order_res and order_res.get('success', False) and is_filled:
                 executed_contract = contract
                 executed_order_res = order_res
                 executed_trade_size = trade_size
                 executed_premium = entry_premium
+                executed_model = model_used
+                print(f"[EXECUTION CONFIRMED] Trade opened via {executed_model} @ ~${executed_premium:,.2f}")
                 break
             else:
                 err_code = order_res.get('error', {}).get('code', 'Unknown Error') if order_res else "No Response"
@@ -728,7 +788,7 @@ class DeltaDeepITMBot:
         }
 
         msg = (
-            f"🚀 NEW TRADE EXECUTED ({setup_type})!\n"
+            f"🚀 NEW TRADE EXECUTED ({setup_type})!\n" f"Execution Mode: {executed_model}\n"
             f"Symbol: {symbol} ({trade_type})\n"
             f"Strike: ${strike:,.0f} (Deep ITM Delta ~0.85)\n"
             f"Spot Entry: ${spot_open:,.1f}\n"
