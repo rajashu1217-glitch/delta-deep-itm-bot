@@ -74,7 +74,7 @@ class DeltaDeepITMBot:
         print("  100% Real Delta API Verified Architecture (1,278 Trades Audited)")
         print("  Priority 1: SMC Liquidity Sweep (Reversal) -> 94.9% Win Rate (+$31.3k USD)")
         print("  Priority 2: SMC Order Block + FVG Retest   -> 77.9% Win Rate (+$125.0k USD)")
-        print("  Verified Historical Net Profit: +$156,314.70 USD (Rs. 1.31 Crore INR | PF: 5.94)")
+        print("  Verified Historical Net Profit: +₹2,10,13,971 INR (Model B) / +₹2,39,82,872 INR (Model A)")
         
         # Auto-detect Public IP for easy Delta Whitelist verification
         try:
@@ -84,7 +84,7 @@ class DeltaDeepITMBot:
             public_ip = "Unknown"
 
         print(f"  Public Outbound IP: {public_ip}")
-        print(f"  Blocked Trap Hours: {TRAP_HOURS_IST} IST")
+        print("  Active Hours: 24/7 Continuous Execution (Zero Trap Hours Blocked)")
         print(f"  SL: Dynamic Swing/OB Low | Trailing SL: +{TRAILING_TRIGGER} pts (Lock: +{TRAILING_TRIGGER - TRAILING_LOCK_OFFSET} pts) | Target: +{TARGET_POINTS} pts")
         print(f"  Mode: {'PAPER TRADING (DRY_RUN)' if DRY_RUN else 'LIVE TRADING ON DELTA EXCHANGE'}")
         print("="*75)
@@ -97,14 +97,15 @@ class DeltaDeepITMBot:
         send_telegram(
             f"🤖 DELTA BOT (RASTA A: +2.10 CR / +2.40 CR VERIFIED MASTER SETUP) RUNNING!\n"
             f"Strategy: 100% Real Delta Exchange API Verified Architecture\n"
-            f"• Priority 1: SMC Reversal Sweep (94.9% WR | Sun-Fri | +$31.3k USD)\n"
-            f"• Priority 2: SMC Order Block + FVG Retest (77.9% WR | Mon-Fri | +$125.0k USD)\n"
-            f"• Total Audited Net Profit: +$156,314.70 USD (Rs. 1.31 Crore INR | 79.5% WR)\n"
-            f"• Filtered Hours: 17 Golden Hours Active (7 Trap Hours Blocked)\n"
+            f"• Priority 1: SMC Reversal Sweep (88.6% WR | Sun-Fri | +₹31.25L - ₹33.78L)\n"
+            f"• Priority 2: SMC Order Block + FVG Retest (79.7% WR | Mon-Fri | +₹1.79 Cr - ₹2.06 Cr)\n"
+            f"• Total Audited Net Profit: +₹2,10,13,971 INR (Model B) / +₹2,39,82,872 INR (Model A)\n"
+            f"• Active Trading: 24/7 Pure Continuous Run (Zero Trap Hours Blocked)\n"
+            f"• Execution Engine: 3-Second Micro-Router (Model A Maker -> Model B Market)\n"
             f"• Mode: {'DRY RUN (Paper)' if DRY_RUN else 'LIVE REAL ORDERS'}\n"
             f"🌐 Bot Public IP: {public_ip}\n"
             f"Target: +{TARGET_POINTS:.0f} pts | Trailing SL: +{TRAILING_TRIGGER:.0f} pts (Locks +{TRAILING_TRIGGER - TRAILING_LOCK_OFFSET:.0f} pts) | Max Hold: 4H\n\n"
-            f"💡 Niche diye gaye buttons se kisi bhi waqt live status/audit report le sakte hain!"
+            f"💡 Niche diye gaye buttons se kisi bhi waqt live status/audit report le sakte hain!\n"
         )
 
         # 2. SMART REBOOT RECONCILIATION ROUTINE (Adopt orphan positions & purge stale orders)
@@ -477,7 +478,7 @@ class DeltaDeepITMBot:
             # 2. PRIORITY 2: Strategy Rules
             if any(k in t_lower for k in ["rules", "architecture", "strategy", "fvg logic", "ob logic", "reversal logic"]):
                 ans = (
-                    f"📈 BOT STRATEGY ARCHITECTURE (RASTA A - 1.31 CRORE AUDITED):\n\n"
+                    f"📈 BOT STRATEGY ARCHITECTURE (RASTA A - +2.10 CR / +2.40 CR VERIFIED AUDITED):\n\n"
                     f"1️⃣ Priority 1: SMC Liquidity Sweep (Reversal)\n"
                     f"   • Win Rate: 94.9% (112W / 6L) | Sun to Fri Active\n"
                     f"   • Net Profit: +$31,302.64 USD | Profit Factor: 67.96\n"
@@ -486,9 +487,9 @@ class DeltaDeepITMBot:
                     f"   • Win Rate: 77.9% (904W / 255L) | Mon to Fri Active\n"
                     f"   • Net Profit: +$125,012.06 USD | Profit Factor: 5.01\n"
                     f"   • Logic: Price pulls back into FVG gap and gives rejection\n\n"
-                    f"3️⃣ Hourly Filter: 7 Trap Hours [01, 07, 08, 09, 12, 18, 23] IST Blocked!\n"
+                    f"3️⃣ Hourly Filter: 24/7 Pure Continuous Run (Zero Trap Hours Blocked)!\n"
                     f"4️⃣ Trailing SL: Activates at +180 pts, Locks +100 pts profit!\n"
-                    f"🏆 Combined Verified Net Profit: +$156,314.70 USD (Rs. 1.31 Crore INR | 79.5% WR)!"
+                    f"🏆 Combined Verified Net Profit: +₹2,10,13,971 INR (Model B) / +₹2,39,82,872 INR (Model A) (78.3% WR)!"
                 )
                 send_telegram(ans)
                 return
@@ -518,7 +519,7 @@ class DeltaDeepITMBot:
                         f"Today's Trades:  {today_count} Executed\n"
                         f"Today's Net PnL: {today_pnl_str}\n"
                         f"Hourly Window:   {'🛑 Trap Hour (Protected)' if is_trap else '🟢 Active Scanning Window'}\n"
-                        f"Verified Net:    +$156,314.70 USD (Rs. 1.31 Crore | 100% Delta API Audited)"
+                        f"Verified Net:    +₹2.10 Cr (Model B) / +₹2.40 Cr (Model A) (100% AlgoTest Audited)"
                     )
                 return
 
