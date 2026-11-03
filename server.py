@@ -38,7 +38,7 @@ class StatusHandler(BaseHTTPRequestHandler):
 
         status_data = {
             "status": "online",
-            "version": "Rasta A (1.31 Crore Audited) - Updated 01-Nov-2026",
+            "version": "Rasta A (Pre-SL GTC Fixed) - Updated 03-Nov-2026",
             "render_public_ip": render_ip,
             "bot_state": bot_instance.state,
             "engine_loop_cycle": getattr(bot_instance, 'loop_cycle', 0),
