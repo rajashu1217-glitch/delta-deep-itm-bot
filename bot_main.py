@@ -208,7 +208,7 @@ class DeltaDeepITMBot:
             open_orders = self.client.get_open_orders(prod_id)
             existing_sl_id = None
             for o in open_orders:
-                if o.get('order_type') == 'stop_market_order' and o.get('reduce_only'):
+                if o.get('order_type') in ['stop_market', 'stop_market_order'] and o.get('reduce_only'):
                     existing_sl_id = o.get('id')
                     break
 
@@ -749,7 +749,9 @@ class DeltaDeepITMBot:
         })
 
         self.state = "IN_TRADE_LEG1"
-        sl_prem_target = round(entry_premium - sl_dist, 1)
+        sl_prem_target = round(round((entry_premium - sl_dist) * 2) / 2, 1)
+        if sl_prem_target <= 0.5:
+            sl_prem_target = 0.5
 
         # PROTECTION 1: Exchange-Native Hard Stop-Loss (GTC Failsafe Order on Delta Exchange)
         exchange_sl_id = None
@@ -758,13 +760,17 @@ class DeltaDeepITMBot:
                 product_id=prod_id,
                 size=filled_size,
                 side="sell",
-                order_type="stop_market_order",
+                order_type="stop_market",
                 stop_price=sl_prem_target,
                 reduce_only=True
             )
+            print(f"[EXCHANGE SL ATTEMPT RESPONSE] {sl_res}")
             if sl_res and sl_res.get('success'):
                 exchange_sl_id = sl_res.get('result', {}).get('id')
                 print(f"[EXCHANGE FAILSAFE SL PLACED] Delta Order ID: {exchange_sl_id} @ ${sl_prem_target:,.1f}")
+            else:
+                err_info = sl_res.get('error', {}) if sl_res else "No Response"
+                print(f"[EXCHANGE SL REJECTED] Error: {err_info}")
         except Exception as se:
             print(f"[EXCHANGE SL ERROR] {se}")
 

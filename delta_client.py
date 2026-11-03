@@ -129,18 +129,41 @@ class DeltaClient:
             return {"success": True, "result": {"id": f"sim_{int(time.time())}", "status": "filled", "average_fill_price": str(limit_price or 0.0), "size": int(round(size * 1000))}}
 
         path = "/v2/orders"
+        ot = order_type.lower()
+        is_stop = False
+        stop_order_type = None
+
+        # Delta Exchange API v2 requires order_type="market_order" and stop_order_type="stop_loss_order" for Stop-Market
+        if ot in ["stop_market_order", "stop_market"]:
+            ot = "market_order"
+            is_stop = True
+            stop_order_type = "stop_loss_order"
+        elif ot in ["stop_limit_order", "stop_limit"]:
+            ot = "limit_order"
+            is_stop = True
+            stop_order_type = "stop_loss_order"
+        elif stop_price is not None:
+            is_stop = True
+            stop_order_type = "stop_loss_order"
+
         data = {
             "product_id": product_id,
             "size": int(round(size * 1000)), # Note: Delta contract lot multiplier (1 BTC = 1000 lots)
             "side": side.lower(),
-            "order_type": order_type.lower()
+            "order_type": ot
         }
         if reduce_only:
             data["reduce_only"] = True
         if limit_price is not None:
-            data["limit_price"] = str(limit_price)
-        if stop_price is not None:
-            data["stop_price"] = str(stop_price)
+            clean_limit = round(round(float(limit_price) * 2) / 2, 2)
+            data["limit_price"] = str(clean_limit)
+        if is_stop and stop_price is not None:
+            clean_stop = round(round(float(stop_price) * 2) / 2, 2)
+            if clean_stop <= 0.5:
+                clean_stop = 0.5
+            data["stop_price"] = str(clean_stop)
+            data["stop_trigger_method"] = "mark_price"
+            data["stop_order_type"] = stop_order_type
 
         return self._request('POST', path, data=data, auth=True)
 
