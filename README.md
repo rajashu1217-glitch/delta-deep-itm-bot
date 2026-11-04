@@ -3,7 +3,7 @@
 ### 100% Audited Real Performance: +$250,166.32 USD (₹2,10,13,971 INR / 2.10 Crore - Model B) | +$285,510.38 USD (₹2.40 Crore - Model A)
 ### 1,464 Total Trades | 78.28% Win Rate | Profit Factor: 6.77 | Max Drawdown: -$1,050.07 USD (₹88,206 INR)
 ### Verified via Official Delta Exchange India API (`api.india.delta.exchange`) & AlgoTest Simulator
-### 🛡️ Institutional 3-Layer Protections + 3-Second Smart Router | Last Updated: 02-Nov-2026
+### 🛡️ Institutional 5-Layer Protections + 3-Second Smart Router + Bad-Tick Sanity Guard | Last Updated: 04-Nov-2026
 
 ---
 
@@ -28,8 +28,9 @@ Yeh bot **Delta Exchange India** par automated institutional Deep ITM option tra
    - 1H Close > 1H 20-EMA ➔ Bullish Trend (Only BUY CALL allowed).
    - 1H Close < 1H 20-EMA ➔ Bearish Trend (Only BUY PUT allowed).
 
-4. **15-Minute Candle Close Confirmation:**
-   - Har signal 15m candle close (`candle_start + 15m`) par strictly confirm hota hai (`c_close[i]`). Zero lookahead bias.
+4. **15-Minute Completed Candle Close Confirmation (Updated 04-Nov-2026):**
+   - Har signal 15m candle close par strictly confirm hota hai (`current_15m_start = now_ts - (now_ts % 900)`).
+   - Incomplete ya forming candle ko drop kar diya jata hai. Zero lookahead bias.
 
 5. **Deep ITM Strike Selection (~0.85 Delta):**
    - Live Delta Exchange India contracts se closest 0.85 Delta select hota hai (0.80 - 0.90 Delta range) 0-DTE ya 1-DTE expiry par. Spot ke sath high delta responsiveness with minimum theta decay.
@@ -47,18 +48,27 @@ Yeh bot **Delta Exchange India** par automated institutional Deep ITM option tra
    - Bot waits up to **3.0 seconds** for fill.
    - If unfilled after 3 seconds, bot instantly cancels and sweeps with Market Order (Model B), guaranteeing zero missed runners!
 
+8. **Bad-Tick Sanity Guard (Updated 04-Nov-2026):**
+   - Delta Exchange API se anomalous glitch ticks (jaise flash wick Low=0.1 ya High=140,000) ko filter karta hai.
+   - Any wick deviating >15% from open/close or outside $1,000 - $150,000 is sanitized to prevent fake liquidity sweep signals.
+
 ---
 
 ## 🛡️ Multi-Layer Institutional Protections
-Aapke capital ko market crashes aur cloud offline hone se bachane ke liye yeh **5 security layers** active hain:
+Aapke capital ko market crashes aur exchange anomalies se bachane ke liye yeh **6 security layers** active hain:
 
-1. **Startup Position Reconciliation (Reboot Safety):**
+1. **0-Latency Native Exchange Bracket Stop-Loss (Updated 04-Nov-2026):**
+   - Order submit karte waqt hi Delta Exchange API ko `bracket_stop_loss_price` direct bheja jata hai.
+   - Fill hote hi **zero millisecond delay** me exchange server par hard stop loss place ho jata hai.
+2. **2-Tier Standalone GTC Failsafe SL Backup:**
+   - Standalone GTC Stop-Market order (`stop_order_type: "stop_loss_order"`) with reduce-only retry fallback.
+   - Cloud offline hone par bhi Delta Exchange ka server capital ko bacha leta hai.
+3. **Bad-Tick Sanity Guard:**
+   - Prevents data spikes and exchange glitches from triggering false reversal trades.
+4. **Startup Position Reconciliation (Reboot Safety):**
    - Cloud container (Render) restart hone par, bot Delta API se poochta hai ki koi open position to nahi chhooti.
    - Agar open trade milta hai, to bot use turant adopt karke live trailing restore kar leta hai.
-2. **Exchange-Native Hard Stop-Loss (GTC Failsafe SL):**
-   - Entry order fill hote hi, bot Delta Exchange ke servers par direct ek **GTC Stop-Market Order** place karta hai.
-   - Cloud offline hone par bhi Delta Exchange ka server capital ko bacha leta hai.
-3. **Hard Dollar Drawdown Cap (-$250 USD Circuit Breaker):**
+5. **Hard Dollar Drawdown Cap (-$250 USD Circuit Breaker):**
    - Sudden freak crash aane par, agar loss -$250 USD hit karta hai to instant market-liquidation fire ho jati hai.
-4. **Telegram Emergency Remote Controls:**
+6. **Telegram Emergency Remote Controls:**
    - Phone se directly trade manage karne ke liye 1-tap interactive buttons active hain.

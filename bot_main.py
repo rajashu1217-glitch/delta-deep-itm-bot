@@ -208,7 +208,7 @@ class DeltaDeepITMBot:
             open_orders = self.client.get_open_orders(prod_id)
             existing_sl_id = None
             for o in open_orders:
-                if o.get('order_type') in ['stop_market', 'stop_market_order'] and o.get('reduce_only'):
+                if o.get('order_type') == 'stop_market_order' and o.get('reduce_only'):
                     existing_sl_id = o.get('id')
                     break
 
@@ -553,6 +553,25 @@ class DeltaDeepITMBot:
         if not c_1h or not c_15m:
             return
 
+        # Ensure we strictly evaluate COMPLETED candles (filter out currently-forming incomplete candles)
+        current_15m_start = now_ts - (now_ts % 900)
+        current_1h_start = now_ts - (now_ts % 3600)
+        c_15m = [c for c in c_15m if c['time'] < current_15m_start]
+        c_1h = [c for c in c_1h if c['time'] < current_1h_start]
+
+        if not c_1h or not c_15m:
+            return
+
+        # BAD-TICK SANITY GUARD: Sanitize glitch wicks from Delta API (e.g. low=0.1 or high=140,000)
+        # Prevents anomalous flash spikes from triggering fake SMC liquidity sweeps
+        for c in c_15m + c_1h:
+            ref_price = c.get('open', c.get('close', 0.0))
+            if ref_price > 1000.0:
+                if c.get('low', 0.0) < (ref_price * 0.85) or c.get('low', 0.0) < 1000.0:
+                    c['low'] = min(c['open'], c['close'])
+                if c.get('high', 0.0) > (ref_price * 1.25) or c.get('high', 0.0) > 150000.0:
+                    c['high'] = max(c['open'], c['close'])
+
         df_1h = pd.DataFrame(c_1h)
         df_15m = pd.DataFrame(c_15m)
 
@@ -634,13 +653,18 @@ class DeltaDeepITMBot:
             best_bid_str = quotes.get('best_bid')
             maker_price = float(best_bid_str) if best_bid_str else entry_premium
 
+            approx_maker_sl = round(round((maker_price - sl_dist) * 2) / 2, 1)
+            if approx_maker_sl <= 0.5:
+                approx_maker_sl = 0.5
+
             print(f"[SMART ROUTER] Step 1: Placing MODEL A Maker Limit Order @ ${maker_price:,.2f} on {symbol} (3.0s window)...")
             order_res = self.client.place_order(
                 product_id=prod_id, 
                 size=trade_size, 
                 side="buy", 
                 order_type="limit_order", 
-                limit_price=maker_price
+                limit_price=maker_price,
+                bracket_stop_loss_price=approx_maker_sl
             )
             print(f"[SMART ROUTER] Limit Response: {order_res}")
 
@@ -673,7 +697,16 @@ class DeltaDeepITMBot:
                         print(f"[SMART ROUTER] 3.0s timeout reached without fill! Switching to MODEL B (MARKET ORDER)...")
                         self.client.cancel_order(order_id, prod_id)
                         time.sleep(0.1)
-                        order_res = self.client.place_order(product_id=prod_id, size=trade_size, side="buy", order_type="market_order")
+                        approx_mkt_sl = round(round((entry_premium - sl_dist) * 2) / 2, 1)
+                        if approx_mkt_sl <= 0.5:
+                            approx_mkt_sl = 0.5
+                        order_res = self.client.place_order(
+                            product_id=prod_id, 
+                            size=trade_size, 
+                            side="buy", 
+                            order_type="market_order",
+                            bracket_stop_loss_price=approx_mkt_sl
+                        )
                         print(f"[SMART ROUTER] Market Fallback Response: {order_res}")
                         model_used = "MODEL B (MARKET TAKER - ZERO MISSED RUNNER)"
                         if order_res and order_res.get('success', False):
@@ -681,7 +714,16 @@ class DeltaDeepITMBot:
             else:
                 # Direct market fallback if limit order rejected
                 print(f"[SMART ROUTER] Limit order rejected, falling back directly to MODEL B Market Order...")
-                order_res = self.client.place_order(product_id=prod_id, size=trade_size, side="buy", order_type="market_order")
+                approx_mkt_sl = round(round((entry_premium - sl_dist) * 2) / 2, 1)
+                if approx_mkt_sl <= 0.5:
+                    approx_mkt_sl = 0.5
+                order_res = self.client.place_order(
+                    product_id=prod_id, 
+                    size=trade_size, 
+                    side="buy", 
+                    order_type="market_order",
+                    bracket_stop_loss_price=approx_mkt_sl
+                )
                 model_used = "MODEL B (MARKET TAKER - DIRECT FALLBACK)"
                 if order_res and order_res.get('success', False):
                     is_filled = True
@@ -755,24 +797,49 @@ class DeltaDeepITMBot:
 
         # PROTECTION 1: Exchange-Native Hard Stop-Loss (GTC Failsafe Order on Delta Exchange)
         exchange_sl_id = None
-        try:
-            sl_res = self.client.place_order(
-                product_id=prod_id,
-                size=filled_size,
-                side="sell",
-                order_type="stop_market",
-                stop_price=sl_prem_target,
-                reduce_only=True
-            )
-            print(f"[EXCHANGE SL ATTEMPT RESPONSE] {sl_res}")
-            if sl_res and sl_res.get('success'):
-                exchange_sl_id = sl_res.get('result', {}).get('id')
-                print(f"[EXCHANGE FAILSAFE SL PLACED] Delta Order ID: {exchange_sl_id} @ ${sl_prem_target:,.1f}")
-            else:
-                err_info = sl_res.get('error', {}) if sl_res else "No Response"
-                print(f"[EXCHANGE SL REJECTED] Error: {err_info}")
-        except Exception as se:
-            print(f"[EXCHANGE SL ERROR] {se}")
+        # Check if native bracket SL order ID was already created by Delta Exchange
+        if order_result:
+            bracket_id = order_result.get('bracket_stop_loss_order_id') or order_result.get('bracket_order_id')
+            if bracket_id:
+                exchange_sl_id = bracket_id
+                print(f"[EXCHANGE NATIVE BRACKET SL ACTIVE] Delta Order ID: {exchange_sl_id} @ ${sl_prem_target:,.1f}")
+
+        # If not already attached or if standalone SL needed, place GTC Stop-Market order immediately
+        if not exchange_sl_id:
+            try:
+                # Attempt 1: Standalone Stop-Market with reduce_only=True
+                sl_res = self.client.place_order(
+                    product_id=prod_id,
+                    size=filled_size,
+                    side="sell",
+                    order_type="market_order",
+                    stop_price=sl_prem_target,
+                    reduce_only=True
+                )
+                print(f"[EXCHANGE SL ATTEMPT 1 RESPONSE] {sl_res}")
+                if sl_res and sl_res.get('success'):
+                    exchange_sl_id = sl_res.get('result', {}).get('id')
+                    print(f"[EXCHANGE FAILSAFE SL PLACED] Delta Order ID: {exchange_sl_id} @ ${sl_prem_target:,.1f}")
+                else:
+                    # Attempt 2: If reduce_only rejected due to timing/state race, retry without reduce_only
+                    print("[EXCHANGE SL RETRY] Retrying without reduce_only...")
+                    sl_res2 = self.client.place_order(
+                        product_id=prod_id,
+                        size=filled_size,
+                        side="sell",
+                        order_type="market_order",
+                        stop_price=sl_prem_target,
+                        reduce_only=False
+                    )
+                    print(f"[EXCHANGE SL ATTEMPT 2 RESPONSE] {sl_res2}")
+                    if sl_res2 and sl_res2.get('success'):
+                        exchange_sl_id = sl_res2.get('result', {}).get('id')
+                        print(f"[EXCHANGE FAILSAFE SL PLACED ON RETRY] Delta Order ID: {exchange_sl_id} @ ${sl_prem_target:,.1f}")
+                    else:
+                        err_info = sl_res2.get('error', {}) if sl_res2 else "No Response"
+                        print(f"[EXCHANGE SL REJECTED] Error: {err_info}")
+            except Exception as se:
+                print(f"[EXCHANGE SL ERROR] {se}")
 
         self.active_trade = {
             "symbol": symbol,

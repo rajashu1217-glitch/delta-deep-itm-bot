@@ -118,7 +118,7 @@ class DeltaClient:
     # ==========================================
     # PRIVATE TRADING METHODS
     # ==========================================
-    def place_order(self, product_id: int, size: float, side: str, order_type: str = "market_order", limit_price: float = None, stop_price: float = None, reduce_only: bool = False):
+    def place_order(self, product_id: int, size: float, side: str, order_type: str = "market_order", limit_price: float = None, stop_price: float = None, reduce_only: bool = False, bracket_stop_loss_price: float = None, bracket_take_profit_price: float = None):
         """
         Place Market, Limit, or Stop-Loss Order.
         side: 'buy' or 'sell'
@@ -164,6 +164,16 @@ class DeltaClient:
             data["stop_price"] = str(clean_stop)
             data["stop_trigger_method"] = "mark_price"
             data["stop_order_type"] = stop_order_type
+
+        if bracket_stop_loss_price is not None:
+            clean_bsl = round(round(float(bracket_stop_loss_price) * 2) / 2, 2)
+            if clean_bsl <= 0.5:
+                clean_bsl = 0.5
+            data["bracket_stop_loss_price"] = str(clean_bsl)
+            data["bracket_stop_trigger_method"] = "mark_price"
+        if bracket_take_profit_price is not None:
+            clean_btp = round(round(float(bracket_take_profit_price) * 2) / 2, 2)
+            data["bracket_take_profit_price"] = str(clean_btp)
 
         return self._request('POST', path, data=data, auth=True)
 

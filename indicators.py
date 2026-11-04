@@ -60,8 +60,10 @@ def get_liquidity_levels(df_15m: pd.DataFrame, current_ts: int):
     yesterday_start_ts = int(yesterday_start.timestamp())
     yesterday_end_ts = today_start_ts
     
-    asian_candles = df_15m[(df_15m['time'] >= asian_start_ts) & (df_15m['time'] < asian_end_ts)]
-    prev_day_candles = df_15m[(df_15m['time'] >= yesterday_start_ts) & (df_15m['time'] < yesterday_end_ts)]
+    # Filter bad ticks from level calculation
+    clean_df = df_15m[(df_15m['low'] > 1000.0) & (df_15m['high'] < 150000.0)] if not df_15m.empty else df_15m
+    asian_candles = clean_df[(clean_df['time'] >= asian_start_ts) & (clean_df['time'] < asian_end_ts)]
+    prev_day_candles = clean_df[(clean_df['time'] >= yesterday_start_ts) & (clean_df['time'] < yesterday_end_ts)]
     
     asian_high = float(asian_candles['high'].max()) if not asian_candles.empty else None
     asian_low = float(asian_candles['low'].min()) if not asian_candles.empty else None

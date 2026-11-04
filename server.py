@@ -38,7 +38,10 @@ class StatusHandler(BaseHTTPRequestHandler):
 
         status_data = {
             "status": "online",
-            "version": "Rasta A (Pre-SL GTC Fixed) - Updated 03-Nov-2026",
+            "version": "Rasta A (Completed 15M Candle Fixed) - Updated 04-Nov-2026",
+            "today_trades_count": len(getattr(bot_instance, 'today_trades', [])),
+            "today_pnl_usd": getattr(bot_instance, 'today_pnl', 0.0),
+            "today_trades": getattr(bot_instance, 'today_trades', []),
             "render_public_ip": render_ip,
             "bot_state": bot_instance.state,
             "engine_loop_cycle": getattr(bot_instance, 'loop_cycle', 0),

@@ -73,6 +73,17 @@ SMART_ROUTER_MAKER_TIMEOUT_SEC = float(os.getenv("SMART_ROUTER_MAKER_TIMEOUT_SEC
 MAX_HOLDING_MINUTES = int(os.getenv("MAX_HOLDING_MINUTES", "240")) # 16 bars = 4 Hours
 
 # ==========================================
+# DATA SANITY & EXCHANGE ORDER SAFETY GUARDS (Updated 04-Nov-2026)
+# ==========================================
+# Bad-Tick Sanity Filter: Drops anomalous spikes from Delta Exchange API (e.g. Low=0.1 or High=140,000)
+SANITY_GUARD_MIN_SPOT = float(os.getenv("SANITY_GUARD_MIN_SPOT", "1000.0"))
+SANITY_GUARD_MAX_SPOT = float(os.getenv("SANITY_GUARD_MAX_SPOT", "150000.0"))
+SANITY_GUARD_WICK_DEV = float(os.getenv("SANITY_GUARD_WICK_DEV", "0.15")) # 15% max wick deviation from open/close
+
+# 0-Latency Native Bracket Stop-Loss on Delta Exchange
+ENABLE_NATIVE_BRACKET_SL = os.getenv("ENABLE_NATIVE_BRACKET_SL", "True").lower() in ("true", "1", "yes")
+
+# ==========================================
 # TELEGRAM NOTIFICATIONS & 2-WAY INTERACTIVE
 # ==========================================
 ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "True").lower() in ("true", "1", "yes")
