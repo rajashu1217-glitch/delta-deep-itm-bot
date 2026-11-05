@@ -1,3 +1,8 @@
+# ==============================================================================
+# DELTA EXCHANGE CLIENT - API CONNECTOR
+# Supports: USDT/USD Balance Detection, Native Bracket SL, 50% Margin Auto-Rescue
+# Last Updated: 05-Nov-2026
+# ==============================================================================
 import time
 import hmac
 import hashlib
@@ -195,14 +200,17 @@ class DeltaClient:
         return self._request('GET', path, auth=True)
 
     def get_available_usd_balance(self) -> float:
-        """Fetch available USD cash margin."""
+        """Fetch available USD/USDT cash margin."""
         if self.dry_run:
             return 10000.0
         res = self.get_wallet_balances()
         if res and res.get('success', False):
             for item in res.get('result', []):
-                if item.get('asset_symbol') == 'USD':
-                    return float(item.get('available_balance', 0.0))
+                sym = str(item.get('asset_symbol', '')).upper()
+                if sym in ['USD', 'USDT']:
+                    val = float(item.get('available_balance', 0.0))
+                    if val > 0:
+                        return val
         return 0.0
 
     def get_open_position(self, product_id: int) -> dict:

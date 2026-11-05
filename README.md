@@ -3,7 +3,7 @@
 ### 100% Audited Real Performance: +$250,166.32 USD (₹2,10,13,971 INR / 2.10 Crore - Model B) | +$285,510.38 USD (₹2.40 Crore - Model A)
 ### 1,464 Total Trades | 78.28% Win Rate | Profit Factor: 6.77 | Max Drawdown: -$1,050.07 USD (₹88,206 INR)
 ### Verified via Official Delta Exchange India API (`api.india.delta.exchange`) & AlgoTest Simulator
-### 🛡️ Institutional 5-Layer Protections + 3-Second Smart Router + Bad-Tick Sanity Guard | Last Updated: 04-Nov-2026
+### 🛡️ Institutional 5-Layer Protections + 3-Second Smart Router + Bidirectional Strike Ladder | Last Updated: 05-Nov-2026
 
 ---
 
@@ -51,6 +51,12 @@ Yeh bot **Delta Exchange India** par automated institutional Deep ITM option tra
 8. **Bad-Tick Sanity Guard (Updated 04-Nov-2026):**
    - Delta Exchange API se anomalous glitch ticks (jaise flash wick Low=0.1 ya High=140,000) ko filter karta hai.
    - Any wick deviating >15% from open/close or outside $1,000 - $150,000 is sanitized to prevent fake liquidity sweep signals.
+
+9. **Bidirectional Strike Ladder & Pre-Order Liquidity Gatekeeper (Updated 05-Nov-2026):**
+   - **0.05s Liquidity Gatekeeper:** Order book me `best_ask` check karta hai. Agar sellers missing hain (`best_ask: None`), bina order place kiye 0.05 second me agle candidate strike par shift hota hai.
+   - **Bidirectional Strike Ladder:** Base strike (~0.85 Delta) se shuru karke pehle +1, +2, +3, +4 strikes upar scan karta hai, fir -1, -2, -3, -4 strikes neeche scan karta hai, fir agle din ki expiry (1-DTE) par shift hota hai.
+   - **USDT + USD Margin Auto-Rescue:** Delta India USDT balance detect karta hai aur premium unchai ke hisab se dynamically safe lot size auto-calculate karta hai.
+   - **48H Depth Candle Fetch:** Asian range low/high aur PDH/PDL ko compute karne ke liye 48 hours ka real-time candle data fetch karta hai.
 
 ---
 

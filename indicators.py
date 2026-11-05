@@ -1,3 +1,8 @@
+# ==============================================================================
+# TECHNICAL INDICATORS & SMC LEVELS
+# Includes: Bad-Tick Sanity Guard (Flash Wick Glitch Filter), Asian Range, PDH/PDL
+# Last Updated: 05-Nov-2026
+# ==============================================================================
 import pandas as pd
 import numpy as np
 import datetime

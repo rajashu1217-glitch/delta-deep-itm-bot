@@ -2,7 +2,7 @@
 # DELTA DEEP ITM BOT - WEB HEALTH SERVER & KEEP-ALIVE DAEMON
 # Architecture: Rasta A (100% AlgoTest Verified - +2.10 Cr / +2.40 Cr Audited)
 # Protections: Native GTC Hard SL | 3s Micro-Router | Telegram Remote Controls
-# Last Updated: 02-Nov-2026
+# Last Updated: 05-Nov-2026 (Bidirectional Strike Ladder & Liquidity Gatekeeper)
 # ==============================================================================
 import os
 import sys
@@ -38,7 +38,7 @@ class StatusHandler(BaseHTTPRequestHandler):
 
         status_data = {
             "status": "online",
-            "version": "Rasta A (Completed 15M Candle Fixed) - Updated 04-Nov-2026",
+            "version": "Rasta A (Bidirectional Strike Ladder & Liquidity Gatekeeper) - Updated 05-Nov-2026",
             "today_trades_count": len(getattr(bot_instance, 'today_trades', [])),
             "today_pnl_usd": getattr(bot_instance, 'today_pnl', 0.0),
             "today_trades": getattr(bot_instance, 'today_trades', []),

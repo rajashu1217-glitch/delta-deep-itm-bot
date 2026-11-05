@@ -1,3 +1,8 @@
+# ==============================================================================
+# DELTA DEEP ITM BOT - CONFIGURATION SETTINGS
+# Architecture: Rasta A (Dual SMC Engine + Bidirectional Strike Ladder)
+# Last Updated: 05-Nov-2026 (Pre-Order Liquidity Gatekeeper & Dynamic Auto-Scale)
+# ==============================================================================
 import os
 
 # Auto-load .env file if it exists locally

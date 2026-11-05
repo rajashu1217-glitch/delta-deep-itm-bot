@@ -172,13 +172,23 @@ def calculate_option_delta(spot: float, strike: float, dte_days: float, is_call:
     d1 = (np.log(spot / strike) + 0.5 * iv**2 * T) / (iv * np.sqrt(T))
     return float(norm_cdf(d1)) if is_call else float(norm_cdf(d1) - 1.0)
 
-def find_candidate_contracts(spot_price: float, trade_type: str, setup_type: str, all_options: list, entry_dt: datetime.datetime, limit: int = 4) -> list:
+def find_candidate_contracts(spot_price: float, trade_type: str, setup_type: str, all_options: list, entry_dt: datetime.datetime, limit: int = 10) -> list:
     """
     Intelligent Expiry & Multi-Strike Selector matching Delta Exchange Listed Products:
     - 1 DTE deep ITM (~0.85 Delta) for maximum responsiveness and minimal theta decay.
-    - Avoids expired contracts: If after 17:15 IST, skips today's settlement and targets tomorrow/Monday.
-    - Ranks strikes by closeness to 0.85 Delta, prioritizing Deeper ITM (0.85 -> 0.90) over shallower.
-    - Returns top ranked candidate contracts so bot can fallback if one strike breaches Delta's Max OI limit.
+    - Avoids expired contracts: Discards contracts with < 2.5 hours remaining.
+    - Systematic Bidirectional Strike Ladder (User Requirement):
+        1. Base target strike closest to 0.85 Delta
+        2. +1 strike up (higher strike price)
+        3. +2 strikes up
+        4. +3 strikes up
+        5. +4 strikes up
+        6. -1 strike down (lower strike price)
+        7. -2 strikes down
+        8. -3 strikes down
+        9. -4 strikes down
+        Repeated for next available expiry (e.g. 1-DTE / next DTE)
+    - Returns ordered candidates for rapid liquidity gatekeeper & multi-strike fallback.
     """
     is_call = (trade_type == 'BUY_CALL')
     contract_type = 'call_options' if is_call else 'put_options'
@@ -228,39 +238,61 @@ def find_candidate_contracts(spot_price: float, trade_type: str, setup_type: str
         candidate_expiries = sorted_expiries
 
     ranked_products = []
-    # Rank within candidate expiries (nearest target expiry first)
+    # Rank within candidate expiries using Bidirectional Ladder (+1, +2, +3 up, then -1, -2, -3 down)
     for exp_info in candidate_expiries[:2]:
         dte = exp_info['dte']
-        exp_candidates = []
-        for p in exp_info['products']:
+        exp_products = exp_info['products']
+        valid_products = []
+        for p in exp_products:
             strike = float(p.get('strike_price', 0))
             if strike <= 0:
                 continue
             delta = calculate_option_delta(spot_price, strike, dte, is_call)
-            delta_mag = abs(delta)
-            
-            # Deep ITM range: 0.75 to 0.95
-            if 0.75 <= delta_mag <= 0.95:
-                diff = abs(delta_mag - TARGET_DELTA)
-                # Prioritize deeper ITM (0.85 -> 0.95) over shallower (0.75 -> 0.85) to minimize theta decay
-                score = diff if delta_mag >= TARGET_DELTA else diff * 1.35
-                exp_candidates.append({
-                    'product': p,
-                    'symbol': p.get('symbol'),
-                    'strike': strike,
-                    'delta': delta,
-                    'delta_mag': delta_mag,
-                    'score': score
-                })
-        exp_candidates.sort(key=lambda x: x['score'])
-        ranked_products.extend([x['product'] for x in exp_candidates[:limit]])
+            valid_products.append({
+                'product': p,
+                'symbol': p.get('symbol'),
+                'strike': strike,
+                'delta': delta,
+                'delta_mag': abs(delta)
+            })
+
+        # Sort all available strikes strictly in ascending numerical order
+        valid_products.sort(key=lambda x: x['strike'])
+        if not valid_products:
+            continue
+
+        # Find the base strike closest to TARGET_DELTA (0.85)
+        best_idx = min(range(len(valid_products)), key=lambda i: abs(valid_products[i]['delta_mag'] - TARGET_DELTA))
+
+        # Construct user-defined ladder: Base -> +1 up -> +2 up -> +3 up -> +4 up -> -1 down -> -2 down -> -3 down -> -4 down
+        ladder_indices = [best_idx]
+        max_steps = 4
+        # Higher strikes (+1 up, +2 up, +3 up, +4 up)
+        for step in range(1, max_steps + 1):
+            up_idx = best_idx + step
+            if up_idx < len(valid_products):
+                ladder_indices.append(up_idx)
+        # Lower strikes (-1 down, -2 down, -3 down, -4 down)
+        for step in range(1, max_steps + 1):
+            dn_idx = best_idx - step
+            if dn_idx >= 0:
+                ladder_indices.append(dn_idx)
+
+        for idx in ladder_indices:
+            item = valid_products[idx]
+            # Deep ITM sanity guard: Delta magnitude between 0.65 and 0.98
+            if 0.65 <= item['delta_mag'] <= 0.98:
+                if item['product'] not in ranked_products:
+                    ranked_products.append(item['product'])
+            if len(ranked_products) >= limit:
+                break
         if len(ranked_products) >= limit:
             break
 
     if ranked_products:
         return ranked_products[:limit]
 
-    # Fallback to nearest valid strike if no candidate in 0.75-0.95 range
+    # Fallback to nearest valid strike if no candidate in 0.65-0.98 range
     nearest_exp = candidate_expiries[0]
     best_prod = min(nearest_exp['products'], key=lambda p: abs(float(p.get('strike_price', 0)) - (spot_price * (0.90 if is_call else 1.10))))
     return [best_prod]

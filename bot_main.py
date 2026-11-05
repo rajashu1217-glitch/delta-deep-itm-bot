@@ -67,6 +67,7 @@ class DeltaDeepITMBot:
         self.loop_cycle = 0
         self.consecutive_api_errors = 0
         self.last_api_ping_ms = 0
+        self.last_scanned_15m_bucket = 0
 
     def run(self):
         print("="*75)
@@ -121,10 +122,12 @@ class DeltaDeepITMBot:
                 # ==========================================
                 # 1. SETUP SCANNER (At 15-Minute Candle Close)
                 # ==========================================
-                is_15m_close = (now_dt.minute % 15 == 0 and now_dt.second <= 15)
+                current_15m_bucket = now_ts - (now_ts % 900)
+                is_15m_close = (now_dt.minute % 15 == 0 and now_dt.second <= 25)
 
-                if is_15m_close:
+                if is_15m_close and self.last_scanned_15m_bucket != current_15m_bucket:
                     self._scan_and_execute_setup(now_ts, now_dt, now_ist)
+                    self.last_scanned_15m_bucket = current_15m_bucket
 
                 # ==========================================
                 # 2. ACTIVE TRADE MANAGEMENT (1-Minute Ticks)
@@ -288,8 +291,8 @@ class DeltaDeepITMBot:
             day_name = now_ist.strftime("%A")
             hour_ist = now_ist.hour
 
-            c_15m = self.client.get_candles(SYMBOL_SPOT, resolution="15m", start_ts=now_ts - 12 * 3600, end_ts=now_ts)
-            c_1h = self.client.get_candles(SYMBOL_SPOT, resolution="1h", start_ts=now_ts - 36 * 3600, end_ts=now_ts)
+            c_15m = self.client.get_candles(SYMBOL_SPOT, resolution="15m", start_ts=now_ts - 48 * 3600, end_ts=now_ts)
+            c_1h = self.client.get_candles(SYMBOL_SPOT, resolution="1h", start_ts=now_ts - 48 * 3600, end_ts=now_ts)
 
             if not c_15m or not c_1h:
                 return "⚠️ Market data temporarily unavailable from Delta API."
@@ -546,9 +549,9 @@ class DeltaDeepITMBot:
 
         today_date = now_ist.date()
 
-        # Fetch market candles
-        c_1h = self.client.get_candles(SYMBOL_SPOT, resolution="1h", start_ts=now_ts - 36 * 3600, end_ts=now_ts)
-        c_15m = self.client.get_candles(SYMBOL_SPOT, resolution="15m", start_ts=now_ts - 12 * 3600, end_ts=now_ts)
+        # Fetch market candles (48 hours guarantees 100% full Asian range + full yesterday PDH/PDL)
+        c_1h = self.client.get_candles(SYMBOL_SPOT, resolution="1h", start_ts=now_ts - 48 * 3600, end_ts=now_ts)
+        c_15m = self.client.get_candles(SYMBOL_SPOT, resolution="15m", start_ts=now_ts - 48 * 3600, end_ts=now_ts)
 
         if not c_1h or not c_15m:
             return
@@ -606,9 +609,9 @@ class DeltaDeepITMBot:
         # Calculate Price Action Swing / OB Stop Loss
         sl_dist = calculate_swing_sl(df_15m, trade_type, spot_open, buffer=30.0, custom_sl=custom_sl)
 
-        # Fetch active Delta Exchange options & candidate contracts
+        # Fetch active Delta Exchange options & candidate contracts (Bidirectional Ladder: Base -> +1,+2,+3 up -> -1,-2,-3 down)
         options = self.client.get_all_option_products()
-        candidate_contracts = find_candidate_contracts(spot_open, trade_type, setup_type, options, now_dt, limit=4)
+        candidate_contracts = find_candidate_contracts(spot_open, trade_type, setup_type, options, now_dt, limit=10)
         if not candidate_contracts:
             print("[Error] No matching option contract found on Delta Exchange.")
             return
@@ -619,38 +622,47 @@ class DeltaDeepITMBot:
         executed_premium = 0.0
         rejection_reasons = []
 
-        # Multi-Strike Smart Fallback: If top strike breaches Max OI, immediately retry next strike!
+        # Multi-Strike Smart Fallback & Liquidity Gatekeeper
         for c_idx, contract in enumerate(candidate_contracts):
             symbol = contract['symbol']
             prod_id = contract['id']
             strike = float(contract.get('strike_price', 0))
 
+            # Step 1: Pre-Order Liquidity Gatekeeper (Order book check)
+            ticker_info = self.client.get_ticker(symbol)
+            quotes = ticker_info.get('quotes', {}) if ticker_info else {}
+            best_bid_str = quotes.get('best_bid')
+            best_ask_str = quotes.get('best_ask')
+
+            # Skip illiquid contracts (empty order book / no sellers) immediately without placing orders
+            if not self.client.dry_run and (not best_ask_str or float(best_ask_str) <= 0):
+                print(f"[SKIP ILLIQUID STRIKE] {symbol} (Strike ${strike:,.0f}) has NO active ask/sellers in order book (best_ask: {best_ask_str})! Checking next ladder strike...")
+                rejection_reasons.append(f"{symbol} (No ask liquidity)")
+                continue
+
+            # Step 2: Fetch premium & verify margin
             opt_candles = self.client.get_candles(f"MARK:{symbol}", resolution="1m", start_ts=now_ts - 180, end_ts=now_ts)
             entry_premium = float(opt_candles[-1]['close']) if opt_candles else float(contract.get('mark_price', 0))
 
-            # Dynamic Lot Sizing & Delta Margin Verification
             trade_size = FIXED_SIZE_BTC
             if not self.client.dry_run:
                 avail_usd = self.client.get_available_usd_balance()
                 req_cost = trade_size * entry_premium
-                if req_cost > avail_usd * 0.85:
-                    max_safe_btc = round((avail_usd * 0.80) / entry_premium, 2)
+                if avail_usd > 0 and req_cost > avail_usd * 0.75:
+                    max_safe_btc = round((avail_usd * 0.70) / entry_premium, 2)
                     if max_safe_btc >= 0.01:
-                        print(f"[MARGIN AUTO-SCALE] Available USD: ${avail_usd:,.2f} | Requested: {trade_size} BTC -> Safe size: {max_safe_btc} BTC (${max_safe_btc * entry_premium:,.2f})")
+                        print(f"[MARGIN AUTO-SCALE] Available USD/USDT: ${avail_usd:,.2f} | Requested: {trade_size} BTC -> Safe size: {max_safe_btc} BTC (${max_safe_btc * entry_premium:,.2f})")
                         trade_size = max_safe_btc
                     else:
-                        print(f"[SKIP STRIKE] Insufficient balance for {symbol} (${entry_premium:,.2f})")
-                        rejection_reasons.append(f"{symbol} (Insufficient margin)")
+                        print(f"[SKIP STRIKE] Insufficient balance for {symbol} (Balance: ${avail_usd:,.2f} < Cost: ${req_cost:,.2f})")
+                        rejection_reasons.append(f"{symbol} (Insufficient balance: ${avail_usd:,.2f})")
                         continue
 
-            print(f"[ORDER ATTEMPT {c_idx+1}/{len(candidate_contracts)}] Trying {symbol} (Strike ${strike:,.0f} | Size: {trade_size} BTC)...")
+            print(f"[ORDER ATTEMPT {c_idx+1}/{len(candidate_contracts)}] Trying {symbol} (Strike ${strike:,.0f} | Size: {trade_size} BTC | Ask: ${best_ask_str})...")
 
             # ==========================================
             # 3-SECOND SMART ORDER ROUTER (MODEL A -> 3s -> MODEL B)
             # ==========================================
-            ticker_info = self.client.get_ticker(symbol)
-            quotes = ticker_info.get('quotes', {})
-            best_bid_str = quotes.get('best_bid')
             maker_price = float(best_bid_str) if best_bid_str else entry_premium
 
             approx_maker_sl = round(round((maker_price - sl_dist) * 2) / 2, 1)
@@ -739,19 +751,35 @@ class DeltaDeepITMBot:
             else:
                 err_code = order_res.get('error', {}).get('code', 'Unknown Error') if order_res else "No Response"
                 err_ctx = str(order_res.get('error', {}).get('context', '')) if order_res else ""
+
+                # Margin Auto-Rescue: If Delta rejected for insufficient_margin, retry with 50% reduced size
+                if err_code == 'insufficient_margin' and trade_size >= 0.02:
+                    half_size = round(trade_size * 0.5, 2)
+                    print(f"[MARGIN AUTO-RESCUE] Delta rejected for insufficient margin on {symbol} ({trade_size} BTC). Retrying with {half_size} BTC...")
+                    order_res = self.client.place_order(
+                        product_id=prod_id, 
+                        size=half_size, 
+                        side="buy", 
+                        order_type="market_order",
+                        bracket_stop_loss_price=approx_mkt_sl
+                    )
+                    if order_res and order_res.get('success', False):
+                        executed_contract = contract
+                        executed_order_res = order_res
+                        executed_trade_size = half_size
+                        executed_premium = entry_premium
+                        executed_model = "MODEL B (AUTO-RESCUE 50% MARGIN SIZE)"
+                        print(f"[EXECUTION CONFIRMED] Trade opened via {executed_model} @ ~${executed_premium:,.2f}")
+                        break
+                    else:
+                        err_code = order_res.get('error', {}).get('code', 'Unknown Error') if order_res else "No Response"
+
                 rejection_reasons.append(f"{symbol} ({err_code})")
 
-                # If Delta rejected due to Max OI or reduce-only, fallback immediately to next strike!
-                if 'max_oi_breached' in err_ctx or 'only_reduce_only_orders_allowed' in err_code:
-                    fallback_alert = f"⚠️ Delta Strike {symbol} Open Interest full (max_oi_breached). Trying next best strike..."
-                    print(f"[OI FALLBACK] {fallback_alert}")
-                    send_telegram(fallback_alert)
-                    time.sleep(1)
-                    continue
-                else:
-                    # Non-OI fatal error, log and stop
-                    print(f"[ORDER FATAL ERROR] {symbol}: {err_code} {err_ctx}")
-                    break
+                # MULTI-STRIKE SMART FALLBACK: If strike fails for ANY reason (OI, margin, liquidity), try next candidate strike!
+                print(f"[STRIKE FALLBACK] {symbol} rejected ({err_code}). Automatically trying next candidate strike in pool...")
+                time.sleep(0.5)
+                continue
 
         if not executed_contract:
             err_msg = (
@@ -943,6 +971,31 @@ class DeltaDeepITMBot:
                 t['sl_prem'] = t['entry_premium'] # Move to Breakeven
                 t['tp1_booked_prem'] = booked_prem
                 self.state = "IN_TRADE_RUNNER"
+
+                # Update Exchange Stop-Loss to Breakeven for remaining runner size
+                if t.get('exchange_sl_id'):
+                    try:
+                        self.client.cancel_order(t['exchange_sl_id'], prod_id)
+                    except Exception:
+                        pass
+                    try:
+                        be_price = round(round(t['entry_premium'] * 2) / 2, 1)
+                        if be_price <= 0.5:
+                            be_price = 0.5
+                        new_sl = self.client.place_order(
+                            product_id=prod_id,
+                            size=tp_size,
+                            side="sell",
+                            order_type="market_order",
+                            stop_price=be_price,
+                            reduce_only=True
+                        )
+                        if new_sl and new_sl.get('success'):
+                            t['exchange_sl_id'] = new_sl.get('result', {}).get('id')
+                            print(f"[RUNNER BREAKEVEN SL PLACED] Delta Order ID: {t['exchange_sl_id']} @ ${be_price:,.1f}")
+                    except Exception as b_err:
+                        print(f"[Breakeven SL Error] {b_err}")
+
                 send_telegram(f"✅ TARGET BOOKED on {sym} at ${booked_prem:,.2f} (+50% booked)! Runner trailing on 15m 20 EMA with Breakeven SL.")
                 return
 
@@ -956,8 +1009,8 @@ class DeltaDeepITMBot:
                 self._close_position(avg_exit, "RUNNER_BREAKEVEN", now_ist)
                 return
 
-            if now_dt.minute % 15 == 0 and now_dt.second <= 15:
-                spot_c = self.client.get_candles(SYMBOL_SPOT, resolution="15m", start_ts=now_ts - 3600, end_ts=now_ts)
+            if now_dt.minute % 15 == 0 and now_dt.second <= 25:
+                spot_c = self.client.get_candles(SYMBOL_SPOT, resolution="15m", start_ts=now_ts - 12 * 3600, end_ts=now_ts)
                 if spot_c and len(spot_c) >= 20:
                     df_spot = pd.DataFrame(spot_c)
                     df_spot['ema20'] = calculate_ema(df_spot['close'], 20)
