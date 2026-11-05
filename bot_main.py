@@ -22,7 +22,9 @@ from config import (
     MAX_LOSS_PER_TRADE_USD, SMART_ROUTER_MAKER_TIMEOUT_SEC,
     ENABLE_SINGLE_RETEST, ENABLE_CHOP_ZONE_FILTER,
     CHOP_ZONE_BARS, CHOP_ZONE_REANCHOR_HOURS,
-    ENABLE_EMA_SLOPE_GUARD, EMA_SLOPE_LOOKBACK_BARS, EMA_SLOPE_MIN_PTS
+    ENABLE_EMA_SLOPE_GUARD, EMA_SLOPE_LOOKBACK_BARS, EMA_SLOPE_MIN_PTS,
+    ENABLE_SPOT_SHOCKWAVE_GUARD, SHOCKWAVE_1M_PTS, SHOCKWAVE_COOLDOWN_MINUTES,
+    ENABLE_MACRO_CALENDAR_GUARD, MACRO_CALENDAR_EVENTS
 )
 from delta_client import DeltaClient
 from strategy import evaluate_market_setup, find_best_contract, find_candidate_contracts, calculate_swing_sl
@@ -65,6 +67,10 @@ class DeltaDeepITMBot:
         self.used_obs = set()      # Tracks triggered SMC OBs (Single-Retest Rule)
         self.chop_zone = None     # Post-Exit 4-Candle H/L Consolidation Zone Gate
         
+        # Macro & Breaking News Shields (Updated 06-Nov-2026)
+        self.shockwave_freeze_until_ts = 0
+        self.shockwave_reason = ""
+        
         # Daily Tracker for Statistics & PnL (No artificial limit - Governed by Hourly Trap Filters & Cooldown!)
         self.daily_trade_date = None
         self.today_trades = []
@@ -96,6 +102,7 @@ class DeltaDeepITMBot:
         print("  Active Hours: 24/7 Continuous Execution (Zero Trap Hours Blocked)")
         print(f"  SL: Dynamic Swing/OB Low | Trailing SL: +{TRAILING_TRIGGER} pts (Lock: +{TRAILING_TRIGGER - TRAILING_LOCK_OFFSET} pts) | Target: +{TARGET_POINTS} pts")
         print(f"  Chop Filters: Single-Retest={ENABLE_SINGLE_RETEST} | 4-Bar Box={ENABLE_CHOP_ZONE_FILTER} | EMA Slope Guard={ENABLE_EMA_SLOPE_GUARD} (Min: {EMA_SLOPE_MIN_PTS} pts)")
+        print(f"  News Shields: Spot Shockwave Guard (>{SHOCKWAVE_1M_PTS:.0f} pts / {SHOCKWAVE_COOLDOWN_MINUTES}m) | Macro Calendar Blackout={ENABLE_MACRO_CALENDAR_GUARD}")
         print(f"  Mode: {'PAPER TRADING (DRY_RUN)' if DRY_RUN else 'LIVE TRADING ON DELTA EXCHANGE'}")
         print("="*75)
 
@@ -114,6 +121,7 @@ class DeltaDeepITMBot:
             f"• Execution Engine: 3-Second Micro-Router (Model A Maker -> Model B Market)\n"
             f"• Mode: {'DRY RUN (Paper)' if DRY_RUN else 'LIVE REAL ORDERS'}\n"
             f"• Chop Filters: Single-Retest (Active) | 4-Bar Box Zone (Active) | 15m EMA Slope Guard (±{EMA_SLOPE_MIN_PTS:.0f} pts)\n"
+            f"• News Shields: Spot Shockwave Guard (>{SHOCKWAVE_1M_PTS:.0f} pts) | Scheduled Macro Calendar (Active)\n"
             f"🌐 Bot Public IP: {public_ip}\n"
             f"Target: +{TARGET_POINTS:.0f} pts | Trailing SL: +{TRAILING_TRIGGER:.0f} pts (Locks +{TRAILING_TRIGGER - TRAILING_LOCK_OFFSET:.0f} pts) | Max Hold: 4H\n\n"
             f"💡 Niche diye gaye buttons se kisi bhi waqt live status/audit report le sakte hain!\n"
@@ -562,6 +570,47 @@ class DeltaDeepITMBot:
             return
 
         today_date = now_ist.date()
+
+        # =========================================================================
+        # MACRO & BREAKING NEWS SHIELDS (CPI, FOMC, TRUMP TWEETS, WARS)
+        # =========================================================================
+        # 1. Pre-Scheduled Macro Calendar Blackout (US CPI / FOMC / NFP)
+        if ENABLE_MACRO_CALENDAR_GUARD:
+            today_str = now_ist.strftime("%Y-%m-%d")
+            time_str = now_ist.strftime("%H:%M")
+            for ev in MACRO_CALENDAR_EVENTS:
+                if ev.get("date") == today_str and ev.get("start") <= time_str <= ev.get("end"):
+                    print(f"[MACRO BLACKOUT] Inside {ev['name']} window ({ev['start']} - {ev['end']} IST). Skipping setup scan to avoid news whipsaw.")
+                    return
+
+        # 2. Check Ongoing Breaking News Shockwave Freeze
+        if self.shockwave_freeze_until_ts > now_ts:
+            rem_min = max(1, (self.shockwave_freeze_until_ts - now_ts) // 60)
+            print(f"[SHOCKWAVE SAFE MODE] Active ({rem_min}m remaining). Reason: {self.shockwave_reason}. Skipping scan.")
+            return
+
+        # 3. Breaking News Shockwave Velocity Guard (BTC Spot 1m Candle > $500 pts)
+        if ENABLE_SPOT_SHOCKWAVE_GUARD:
+            try:
+                c_1m = self.client.get_candles(SYMBOL_SPOT, resolution="1m", start_ts=now_ts - 360, end_ts=now_ts)
+                if c_1m:
+                    for c in c_1m[-3:]:
+                        c_range = float(c.get('high', 0.0)) - float(c.get('low', 0.0))
+                        if c_range >= SHOCKWAVE_1M_PTS:
+                            self.shockwave_freeze_until_ts = now_ts + (SHOCKWAVE_COOLDOWN_MINUTES * 60)
+                            self.shockwave_reason = f"Spot 1m range ${c_range:,.1f} >= ${SHOCKWAVE_1M_PTS:.0f}"
+                            resume_time = (now_ist + datetime.timedelta(minutes=SHOCKWAVE_COOLDOWN_MINUTES)).strftime("%H:%M:%S IST")
+                            print(f"[SHOCKWAVE DETECTED] Abnormal 1m spot range ${c_range:,.1f} pts! Entering {SHOCKWAVE_COOLDOWN_MINUTES}m Safe Mode.")
+                            send_telegram(
+                                f"🚨 [BREAKING NEWS SHOCKWAVE DETECTED]\n"
+                                f"• Spot 1m Candle Range: ${c_range:,.1f} pts (Threshold: >${SHOCKWAVE_1M_PTS:.0f} pts)\n"
+                                f"• Action: Bot entering {SHOCKWAVE_COOLDOWN_MINUTES}-minute Safe Mode to avoid whipsaw/SL hunting!\n"
+                                f"• Trading Resumes at: {resume_time}\n"
+                                f"• Note: Bot will catch clean SMC trend once market dust settles."
+                            )
+                            return
+            except Exception as se:
+                print(f"[Shockwave Check Error] {se}")
 
         # Fetch market candles (48 hours guarantees 100% full Asian range + full yesterday PDH/PDL)
         c_1h = self.client.get_candles(SYMBOL_SPOT, resolution="1h", start_ts=now_ts - 48 * 3600, end_ts=now_ts)
@@ -1332,12 +1381,19 @@ class DeltaDeepITMBot:
         else:
             window_msg = "🔴 TRAP HOUR (Safety Lock)" if is_trap else "🟢 ACTIVE TRADING WINDOW"
             chop_msg = f"🔒 Protected [${self.chop_zone['low']:,.1f} - ${self.chop_zone['high']:,.1f}]" if (self.chop_zone and ENABLE_CHOP_ZONE_FILTER) else "🟢 Clear (All Zones Open)"
+            if self.shockwave_freeze_until_ts > now_ts:
+                rem_m = max(1, (self.shockwave_freeze_until_ts - now_ts) // 60)
+                news_shield_msg = f"🚨 Safe Mode ({rem_m}m remaining)"
+            else:
+                news_shield_msg = f"🛡️ Active (Spot Guard >${SHOCKWAVE_1M_PTS:.0f} pts)"
+
             report = (
                 f"💓 DELTA BOT HEARTBEAT\n"
                 f"------------------------------------\n"
                 f"Market Window: {window_msg}\n"
                 f"BTC Spot: ${spot_p:,.1f}\n"
                 f"Chop Zone Gate: {chop_msg}\n"
+                f"News Shield:    {news_shield_msg}\n"
                 f"Priority 1 (Reversal): {rev_status}\n"
                 f"Priority 2 (OB+FVG):   {ob_status}\n"
                 f"Today's Trades: {today_count} taken | PnL: {today_pnl_str}\n"

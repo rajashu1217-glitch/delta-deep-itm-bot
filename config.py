@@ -90,6 +90,28 @@ ENABLE_EMA_SLOPE_GUARD = os.getenv("ENABLE_EMA_SLOPE_GUARD", "True").lower() in 
 EMA_SLOPE_LOOKBACK_BARS = int(os.getenv("EMA_SLOPE_LOOKBACK_BARS", "3")) # 3 bars = 45 min
 EMA_SLOPE_MIN_PTS = float(os.getenv("EMA_SLOPE_MIN_PTS", "5.0"))        # Minimum +5.0 pts for Call, -5.0 pts for Put
 
+# ==========================================
+# MACRO & BREAKING NEWS SHIELDS (Updated 06-Nov-2026)
+# ==========================================
+# 1. BTC Spot 1-Minute Velocity Shockwave Guard (Trump Tweets / War / Flash News Spikes)
+ENABLE_SPOT_SHOCKWAVE_GUARD = os.getenv("ENABLE_SPOT_SHOCKWAVE_GUARD", "True").lower() in ("true", "1", "yes")
+SHOCKWAVE_1M_PTS = float(os.getenv("SHOCKWAVE_1M_PTS", "500.0"))                 # >500 pts range on 1-min BTC spot candle
+SHOCKWAVE_COOLDOWN_MINUTES = int(os.getenv("SHOCKWAVE_COOLDOWN_MINUTES", "30")) # Freeze entries for 30 minutes
+
+# 2. Pre-Scheduled High-Impact Macro Calendar Blackout (US CPI / FOMC / NFP)
+ENABLE_MACRO_CALENDAR_GUARD = os.getenv("ENABLE_MACRO_CALENDAR_GUARD", "True").lower() in ("true", "1", "yes")
+MACRO_CALENDAR_EVENTS = [
+    # US CPI & NFP (Typically 18:00 - 19:30 IST)
+    {"date": "2026-11-06", "start": "18:00", "end": "19:30", "name": "US NFP / Employment Report"},
+    {"date": "2026-11-12", "start": "18:00", "end": "19:30", "name": "US CPI Inflation Release"},
+    {"date": "2026-12-04", "start": "18:00", "end": "19:30", "name": "US NFP / Employment Report"},
+    {"date": "2026-12-10", "start": "23:15", "end": "01:30", "name": "US FOMC Interest Rate Decision & Powell"},
+    {"date": "2026-12-11", "start": "18:00", "end": "19:30", "name": "US CPI Inflation Release"},
+    {"date": "2027-01-08", "start": "18:00", "end": "19:30", "name": "US NFP / Employment Report"},
+    {"date": "2027-01-14", "start": "18:00", "end": "19:30", "name": "US CPI Inflation Release"},
+    {"date": "2027-01-28", "start": "23:15", "end": "01:30", "name": "US FOMC Interest Rate Decision & Powell"}
+]
+
 # 3-Second Micro-Router (Model A Maker First -> 3s Timeout -> Model B Market Fallback)
 SMART_ROUTER_MAKER_TIMEOUT_SEC = float(os.getenv("SMART_ROUTER_MAKER_TIMEOUT_SEC", "3.0"))
 
