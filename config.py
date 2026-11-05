@@ -62,14 +62,33 @@ FIXED_SIZE_BTC = float(os.getenv("FIXED_SIZE_BTC", "0.2"))
 
 # Stop Loss Parameters (Price Action Swing / OB Level SL)
 SL_MIN_PTS = float(os.getenv("SL_MIN_PTS", "150.0"))        # Minimum 150 pts SL
-SL_MAX_PTS = float(os.getenv("SL_MAX_PTS", "500.0"))        # Maximum 500 pts SL (Hard Cap)
+SL_MAX_PTS = float(os.getenv("SL_MAX_PTS", "280.0"))        # Maximum 280 pts SL (Strict cap matching AlgoTest avg loss of 141 pts)
 SL_BUFFER_PTS = float(os.getenv("SL_BUFFER_PTS", "30.0"))    # 30 pts buffer past swing/OB
 MAX_LOSS_PER_TRADE_USD = float(os.getenv("MAX_LOSS_PER_TRADE_USD", "250.0")) # Hard Drawdown Circuit Breaker (-$250 USD max loss)
 
-# Target & Trailing SL (Rasta A: Wealth Maximizer Setup - Verified +2.10 Cr)
+# Zero-Loss Guarantee & Dynamic Trailing
+EARLY_BREAKEVEN_TRIGGER = float(os.getenv("EARLY_BREAKEVEN_TRIGGER", "100.0")) # Move to Breakeven at +100 pts profit
+EARLY_BREAKEVEN_LOCK_NET_PTS = float(os.getenv("EARLY_BREAKEVEN_LOCK_NET_PTS", "10.0")) # Pure profit on top of fees
+EARLY_BREAKEVEN_LOCK_PTS = EARLY_BREAKEVEN_LOCK_NET_PTS # Backwards-compatible alias
 TARGET_POINTS = float(os.getenv("TARGET_POINTS", "600.0"))        # +600 pts Target Profit
-TRAILING_TRIGGER = float(os.getenv("TRAILING_TRIGGER", "150.0"))   # Activate Trailing SL at +150 pts (Locks +90 pts)
+TRAILING_TRIGGER = float(os.getenv("TRAILING_TRIGGER", "150.0"))   # Activate Dynamic Trailing at +150 pts
 TRAILING_LOCK_OFFSET = float(os.getenv("TRAILING_LOCK_OFFSET", "60.0")) # Trail by Peak - 60 pts
+
+# ==========================================
+# CHOPPY MARKET FILTERS (Updated 05-Nov-2026)
+# ==========================================
+# 1. Single-Retest Rule: Each SMC OB/FVG is valid for 1 genuine retest only
+ENABLE_SINGLE_RETEST = os.getenv("ENABLE_SINGLE_RETEST", "True").lower() in ("true", "1", "yes")
+
+# 2. Post-Exit 4-Candle High/Low Zone Filter ("No Trade Inside Chop Zone")
+ENABLE_CHOP_ZONE_FILTER = os.getenv("ENABLE_CHOP_ZONE_FILTER", "True").lower() in ("true", "1", "yes")
+CHOP_ZONE_BARS = int(os.getenv("CHOP_ZONE_BARS", "4"))           # 4 bars = 1 hour H/L box
+CHOP_ZONE_REANCHOR_HOURS = float(os.getenv("CHOP_ZONE_REANCHOR_HOURS", "2.0")) # Rolling re-anchor if still inside after 2h
+
+# 3. 15m 20-EMA Slope Guard (Points-based momentum check)
+ENABLE_EMA_SLOPE_GUARD = os.getenv("ENABLE_EMA_SLOPE_GUARD", "True").lower() in ("true", "1", "yes")
+EMA_SLOPE_LOOKBACK_BARS = int(os.getenv("EMA_SLOPE_LOOKBACK_BARS", "3")) # 3 bars = 45 min
+EMA_SLOPE_MIN_PTS = float(os.getenv("EMA_SLOPE_MIN_PTS", "5.0"))        # Minimum +5.0 pts for Call, -5.0 pts for Put
 
 # 3-Second Micro-Router (Model A Maker First -> 3s Timeout -> Model B Market Fallback)
 SMART_ROUTER_MAKER_TIMEOUT_SEC = float(os.getenv("SMART_ROUTER_MAKER_TIMEOUT_SEC", "3.0"))

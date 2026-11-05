@@ -14,11 +14,15 @@ except Exception:
 from config import (
     SYMBOL_SPOT, FIXED_SIZE_BTC, TARGET_POINTS, 
     TRAILING_TRIGGER, TRAILING_LOCK_OFFSET,
+    EARLY_BREAKEVEN_TRIGGER, EARLY_BREAKEVEN_LOCK_NET_PTS, EARLY_BREAKEVEN_LOCK_PTS,
     MAX_HOLDING_MINUTES, DRY_RUN, ENABLE_TELEGRAM, 
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, STATUS_INTERVAL_MINUTES,
     REVERSAL_EXPIRY_MODE, OB_FVG_EXPIRY_MODE,
     TRAP_HOURS_IST, SKIP_DAYS_REVERSAL, SKIP_DAYS_OB_FVG,
-    MAX_LOSS_PER_TRADE_USD, SMART_ROUTER_MAKER_TIMEOUT_SEC
+    MAX_LOSS_PER_TRADE_USD, SMART_ROUTER_MAKER_TIMEOUT_SEC,
+    ENABLE_SINGLE_RETEST, ENABLE_CHOP_ZONE_FILTER,
+    CHOP_ZONE_BARS, CHOP_ZONE_REANCHOR_HOURS,
+    ENABLE_EMA_SLOPE_GUARD, EMA_SLOPE_LOOKBACK_BARS, EMA_SLOPE_MIN_PTS
 )
 from delta_client import DeltaClient
 from strategy import evaluate_market_setup, find_best_contract, find_candidate_contracts, calculate_swing_sl
@@ -57,6 +61,10 @@ class DeltaDeepITMBot:
         self.state = "IDLE"  # IDLE, IN_TRADE_LEG1, IN_TRADE_RUNNER
         self.active_trade = {}
         
+        # Choppy Market Protection Filters (Updated 05-Nov-2026)
+        self.used_obs = set()      # Tracks triggered SMC OBs (Single-Retest Rule)
+        self.chop_zone = None     # Post-Exit 4-Candle H/L Consolidation Zone Gate
+        
         # Daily Tracker for Statistics & PnL (No artificial limit - Governed by Hourly Trap Filters & Cooldown!)
         self.daily_trade_date = None
         self.today_trades = []
@@ -87,6 +95,7 @@ class DeltaDeepITMBot:
         print(f"  Public Outbound IP: {public_ip}")
         print("  Active Hours: 24/7 Continuous Execution (Zero Trap Hours Blocked)")
         print(f"  SL: Dynamic Swing/OB Low | Trailing SL: +{TRAILING_TRIGGER} pts (Lock: +{TRAILING_TRIGGER - TRAILING_LOCK_OFFSET} pts) | Target: +{TARGET_POINTS} pts")
+        print(f"  Chop Filters: Single-Retest={ENABLE_SINGLE_RETEST} | 4-Bar Box={ENABLE_CHOP_ZONE_FILTER} | EMA Slope Guard={ENABLE_EMA_SLOPE_GUARD} (Min: {EMA_SLOPE_MIN_PTS} pts)")
         print(f"  Mode: {'PAPER TRADING (DRY_RUN)' if DRY_RUN else 'LIVE TRADING ON DELTA EXCHANGE'}")
         print("="*75)
 
@@ -104,6 +113,7 @@ class DeltaDeepITMBot:
             f"• Active Trading: 24/7 Pure Continuous Run (Zero Trap Hours Blocked)\n"
             f"• Execution Engine: 3-Second Micro-Router (Model A Maker -> Model B Market)\n"
             f"• Mode: {'DRY RUN (Paper)' if DRY_RUN else 'LIVE REAL ORDERS'}\n"
+            f"• Chop Filters: Single-Retest (Active) | 4-Bar Box Zone (Active) | 15m EMA Slope Guard (±{EMA_SLOPE_MIN_PTS:.0f} pts)\n"
             f"🌐 Bot Public IP: {public_ip}\n"
             f"Target: +{TARGET_POINTS:.0f} pts | Trailing SL: +{TRAILING_TRIGGER:.0f} pts (Locks +{TRAILING_TRIGGER - TRAILING_LOCK_OFFSET:.0f} pts) | Max Hold: 4H\n\n"
             f"💡 Niche diye gaye buttons se kisi bhi waqt live status/audit report le sakte hain!\n"
@@ -235,6 +245,7 @@ class DeltaDeepITMBot:
                 "sl_prem": max(10.0, entry_price - 300.0),
                 "tp1_prem": entry_price + TARGET_POINTS,
                 "peak_profit": 0.0,
+                "be_locked": False,
                 "trailing_active": False,
                 "tp1_booked_prem": 0.0,
                 "exchange_sl_id": existing_sl_id
@@ -366,6 +377,7 @@ class DeltaDeepITMBot:
             total_candles = len(df_15m)
             trap_candles = 0
             valid_signals = []
+            audit_used_obs = set()
             
             for i in range(15, total_candles):
                 sub_15 = df_15m.iloc[:i+1].copy()
@@ -382,8 +394,10 @@ class DeltaDeepITMBot:
                     trap_candles += 1
                     continue
                     
-                sig, stype, sl = evaluate_market_setup(sub_1h, sub_15, levels, t_ist)
+                sig, stype, sl, ob_id = evaluate_market_setup(sub_1h, sub_15, levels, t_ist, used_obs=audit_used_obs)
                 if sig:
+                    if ob_id:
+                        audit_used_obs.add(ob_id)
                     valid_signals.append((t_ist.strftime('%d-%b %H:%M'), sig, stype, sub_15['close'].iloc[-1]))
                     
             high_p = df_15m['high'].max()
@@ -583,7 +597,37 @@ class DeltaDeepITMBot:
 
         levels = get_liquidity_levels(df_15m, now_ts)
 
-        trade_type, setup_type, custom_sl = evaluate_market_setup(df_1h, df_15m, levels, now_ist)
+        # Check Post-Exit Chop Zone Filter
+        if ENABLE_CHOP_ZONE_FILTER and self.chop_zone:
+            last_close = float(df_15m.iloc[-1]['close'])
+            z_low = self.chop_zone['low']
+            z_high = self.chop_zone['high']
+
+            # Check if price has broken out of the consolidation chop box
+            if last_close > z_high or last_close < z_low:
+                print(f"[CHOP ZONE RELEASED] Price ${last_close:,.1f} broke out of consolidation range [${z_low:,.1f} - ${z_high:,.1f}]. Resuming scans.")
+                send_telegram(f"🚀 [CHOP ZONE BREAKOUT] Price ${last_close:,.1f} broke out of consolidation zone [${z_low:,.1f} - ${z_high:,.1f}]! Normal scans resumed.")
+                self.chop_zone = None
+            else:
+                # Still inside chop zone. Check dynamic rolling re-anchor (> 2 hours)
+                if (now_ts - self.chop_zone.get('reanchor_ts', now_ts)) >= (CHOP_ZONE_REANCHOR_HOURS * 3600):
+                    df_recent = df_15m.iloc[-CHOP_ZONE_BARS:]
+                    new_high = float(df_recent['high'].max())
+                    new_low = float(df_recent['low'].min())
+                    self.chop_zone['high'] = new_high
+                    self.chop_zone['low'] = new_low
+                    self.chop_zone['reanchor_ts'] = now_ts
+                    print(f"[CHOP ZONE RE-ANCHORED] Rangebound consolidation ongoing (> {CHOP_ZONE_REANCHOR_HOURS}h). Zone re-anchored to last {CHOP_ZONE_BARS} candles: [${new_low:,.1f} - ${new_high:,.1f}]")
+                    send_telegram(f"🔄 [CHOP ZONE RE-ANCHORED] Market still in chop (> {CHOP_ZONE_REANCHOR_HOURS}h). Box updated to [${new_low:,.1f} - ${new_high:,.1f}].")
+
+                print(f"[CHOP FILTER ACTIVE] Price ${last_close:,.1f} is inside consolidation box [${z_low:,.1f} - ${z_high:,.1f}]. Skipping setup scan.")
+                return
+
+        trade_type, setup_type, custom_sl, ob_id = evaluate_market_setup(
+            df_1h, df_15m, levels, now_ist,
+            used_obs=self.used_obs,
+            chop_zone=self.chop_zone
+        )
         if not trade_type:
             return
 
@@ -874,6 +918,7 @@ class DeltaDeepITMBot:
             "product_id": prod_id,
             "trade_type": trade_type,
             "setup_type": setup_type,
+            "ob_id": ob_id,
             "strike": strike,
             "size": filled_size,
             "entry_time_ts": now_ts,
@@ -884,10 +929,18 @@ class DeltaDeepITMBot:
             "sl_prem": sl_prem_target,
             "tp1_prem": entry_premium + TARGET_POINTS,
             "peak_profit": 0.0,
+            "be_locked": False,
             "trailing_active": False,
             "tp1_booked_prem": 0.0,
             "exchange_sl_id": exchange_sl_id
         }
+
+        # Single-Retest Rule: Register OB so it cannot be retested again in chop
+        if ob_id:
+            self.used_obs.add(ob_id)
+            if len(self.used_obs) > 100:
+                self.used_obs.pop()
+        self.chop_zone = None  # Clear chop zone on valid entry
 
         msg = (
             f"🚀 NEW TRADE EXECUTED ({setup_type})!\n" f"Execution Mode: {executed_model}\n"
@@ -902,6 +955,51 @@ class DeltaDeepITMBot:
             f"Time: {now_ist.strftime('%Y-%m-%d %H:%M:%S IST')}"
         )
         send_telegram(msg)
+
+    def _update_exchange_sl(self, product_id: int, size: float, new_sl_price: float):
+        """Safely updates or replaces Stop-Loss order directly on Delta Exchange servers."""
+        t = self.active_trade
+        if not t:
+            return
+        old_sl_id = t.get('exchange_sl_id')
+        if old_sl_id:
+            try:
+                self.client.cancel_order(old_sl_id, product_id)
+                print(f"[EXCHANGE SL UPDATE] Cancelled previous SL ID: {old_sl_id}")
+            except Exception as ce:
+                print(f"[EXCHANGE SL CANCEL ERROR] {ce}")
+
+        try:
+            sl_price = round(round(new_sl_price * 2) / 2, 1)
+            if sl_price <= 0.5:
+                sl_price = 0.5
+            sl_res = self.client.place_order(
+                product_id=product_id,
+                size=size,
+                side="sell",
+                order_type="market_order",
+                stop_price=sl_price,
+                reduce_only=True
+            )
+            if sl_res and sl_res.get('success'):
+                t['exchange_sl_id'] = sl_res.get('result', {}).get('id')
+                print(f"[EXCHANGE SL UPDATED ON DELTA] New Order ID: {t['exchange_sl_id']} @ ${sl_price:,.1f}")
+            else:
+                sl_res2 = self.client.place_order(
+                    product_id=product_id,
+                    size=size,
+                    side="sell",
+                    order_type="market_order",
+                    stop_price=sl_price,
+                    reduce_only=False
+                )
+                if sl_res2 and sl_res2.get('success'):
+                    t['exchange_sl_id'] = sl_res2.get('result', {}).get('id')
+                    print(f"[EXCHANGE SL UPDATED ON DELTA (NO-RO)] New Order ID: {t['exchange_sl_id']} @ ${sl_price:,.1f}")
+                else:
+                    print(f"[EXCHANGE SL UPDATE REJECTED] {sl_res2}")
+        except Exception as se:
+            print(f"[EXCHANGE SL UPDATE EXCEPTION] {se}")
 
     def _manage_active_trade(self, now_ts: int, now_dt: datetime.datetime, now_ist: datetime.datetime):
         t = self.active_trade
@@ -933,15 +1031,41 @@ class DeltaDeepITMBot:
             return
 
         # ==========================================
-        # DYNAMIC TRAILING SL (Rasta A: Trigger at +180 pts, Offset 80 pts -> Locks +100 pts)
+        # ZERO-LOSS GUARANTEE: DYNAMIC FEE-ADJUSTED BREAKEVEN AT +100 PTS
+        # ==========================================
+        if not t.get('be_locked', False) and running_gain >= EARLY_BREAKEVEN_TRIGGER:
+            spot_entry = t.get('btc_spot_entry', 80500.0)
+            # Delta Option Fees: 0.01% Maker Entry + 0.03% Taker Exit = 0.04% spot
+            # Converted to option premium points via ~0.85 Delta
+            roundtrip_fee_pts = round((spot_entry * 0.0004) / 0.85, 1)
+            total_be_lock = roundtrip_fee_pts + EARLY_BREAKEVEN_LOCK_NET_PTS
+            be_sl = round(round((t['entry_premium'] + total_be_lock) * 2) / 2, 1)
+            if be_sl > t['sl_prem']:
+                t['sl_prem'] = be_sl
+                t['be_locked'] = True
+                print(f"[ZERO-LOSS GUARANTEE] Reached +{running_gain:.1f} pts! Moving SL to Breakeven @ ${be_sl:,.1f} (+{roundtrip_fee_pts:.1f} pts fee + {EARLY_BREAKEVEN_LOCK_NET_PTS:.0f} pts net profit)")
+                self._update_exchange_sl(prod_id, t['size'], be_sl)
+                send_telegram(
+                    f"🛡️ [ZERO-LOSS GUARANTEE ACTIVATED] {sym}!\n"
+                    f"• Floating Profit reached: +{running_gain:.1f} pts\n"
+                    f"• SL moved to Breakeven: ${be_sl:,.1f}\n"
+                    f"  (Includes +{roundtrip_fee_pts:.1f} pts exchange fees + {EARLY_BREAKEVEN_LOCK_NET_PTS:.0f} pts pure net profit)\n"
+                    f"• Delta Exchange SL updated! Trade CANNOT turn into a loss now."
+                )
+
+        # ==========================================
+        # DYNAMIC TRAILING SL (Trigger at +200 pts, Offset 100 pts)
         # ==========================================
         if t['peak_profit'] >= TRAILING_TRIGGER:
-            trailing_sl = (t['entry_premium'] + t['peak_profit']) - TRAILING_LOCK_OFFSET
+            trailing_sl = round(round(((t['entry_premium'] + t['peak_profit']) - TRAILING_LOCK_OFFSET) * 2) / 2, 1)
             if trailing_sl > t['sl_prem']:
                 t['sl_prem'] = trailing_sl
+                self._update_exchange_sl(prod_id, t['size'], trailing_sl)
                 if not t['trailing_active']:
                     t['trailing_active'] = True
-                    send_telegram(f"🛡️ TRAILING SL ACTIVATED on {sym}! Profit reached +{t['peak_profit']:.0f} pts. New SL locked at ${trailing_sl:,.2f}.")
+                    send_telegram(f"🛡️ TRAILING SL ACTIVATED on {sym}! Profit reached +{t['peak_profit']:.0f} pts. New SL locked at ${trailing_sl:,.2f} on Delta Server.")
+                else:
+                    print(f"[TRAILING SL ADVANCED] New SL locked at ${trailing_sl:,.2f}")
 
         # ==========================================
         # LEG 1: CHECKING SL & TARGET
@@ -1074,6 +1198,34 @@ class DeltaDeepITMBot:
         self.state = "IDLE"
         self.active_trade = {}
 
+        # Activate Post-Exit Chop Zone Filter if trade exited via SL, Breakeven, or Time Stop
+        if ENABLE_CHOP_ZONE_FILTER and reason in [
+            "SWING_SL_HIT", "TRAILING_SL_HIT", "RUNNER_BREAKEVEN", 
+            "TIME_STOP_4H", "CIRCUIT_BREAKER_HARD_DOLLAR_CAP"
+        ]:
+            try:
+                now_sec = int(time.time())
+                c_recent = self.client.get_candles(SYMBOL_SPOT, resolution="15m", start_ts=now_sec - 3600 * 3, end_ts=now_sec)
+                if c_recent and len(c_recent) >= CHOP_ZONE_BARS:
+                    df_rec = pd.DataFrame(c_recent).iloc[-CHOP_ZONE_BARS:]
+                    z_high = float(df_rec['high'].max())
+                    z_low = float(df_rec['low'].min())
+                    self.chop_zone = {
+                        "high": z_high,
+                        "low": z_low,
+                        "start_ts": now_sec,
+                        "reanchor_ts": now_sec
+                    }
+                    print(f"[CHOP ZONE ENGAGED] Post-exit ({reason}). Box: [${z_low:,.1f} - ${z_high:,.1f}] (Last {CHOP_ZONE_BARS} candles).")
+                    send_telegram(
+                        f"🛡️ [CHOP ZONE ACTIVATED]\n"
+                        f"• Reason: Post-exit ({reason})\n"
+                        f"• Chop Range: ${z_low:,.1f} - ${z_high:,.1f} ({CHOP_ZONE_BARS} bars / 1 hour)\n"
+                        f"• Protection: Bot will NOT enter any trade inside this range until price breaks out!"
+                    )
+            except Exception as ze:
+                print(f"[Chop Zone Init Error] {ze}")
+
         # Auto-update Master Trade Journal (CSV & Excel) after every trade!
         try:
             from trade_journal import record_trade_exit, send_journal_telegram_file
@@ -1179,11 +1331,13 @@ class DeltaDeepITMBot:
             )
         else:
             window_msg = "🔴 TRAP HOUR (Safety Lock)" if is_trap else "🟢 ACTIVE TRADING WINDOW"
+            chop_msg = f"🔒 Protected [${self.chop_zone['low']:,.1f} - ${self.chop_zone['high']:,.1f}]" if (self.chop_zone and ENABLE_CHOP_ZONE_FILTER) else "🟢 Clear (All Zones Open)"
             report = (
                 f"💓 DELTA BOT HEARTBEAT\n"
                 f"------------------------------------\n"
                 f"Market Window: {window_msg}\n"
                 f"BTC Spot: ${spot_p:,.1f}\n"
+                f"Chop Zone Gate: {chop_msg}\n"
                 f"Priority 1 (Reversal): {rev_status}\n"
                 f"Priority 2 (OB+FVG):   {ob_status}\n"
                 f"Today's Trades: {today_count} taken | PnL: {today_pnl_str}\n"

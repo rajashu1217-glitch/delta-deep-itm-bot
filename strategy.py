@@ -12,30 +12,42 @@ from config import (
     SL_MIN_PTS, SL_MAX_PTS, SL_BUFFER_PTS, 
     TARGET_DELTA, REVERSAL_EXPIRY_MODE, OB_FVG_EXPIRY_MODE,
     TRAP_HOURS_IST, SKIP_DAYS_REVERSAL, SKIP_DAYS_OB_FVG,
-    MIN_FVG_GAP, MAX_OB_BARS
+    MIN_FVG_GAP, MAX_OB_BARS,
+    ENABLE_SINGLE_RETEST, ENABLE_CHOP_ZONE_FILTER,
+    ENABLE_EMA_SLOPE_GUARD, EMA_SLOPE_LOOKBACK_BARS, EMA_SLOPE_MIN_PTS
 )
 
 def calculate_swing_sl(df_15m: pd.DataFrame, entry_signal: str, entry_price: float, buffer: float = SL_BUFFER_PTS, custom_sl: float = None):
     """
     Price Action Swing / OB Stop Loss:
-    - If custom_sl provided (e.g. OB Low / High), use it with buffer.
+    - If custom_sl provided (e.g. OB Low / High):
+        If OB distance <= 250 pts, anchor to OB.
+        If OB is ancient / too far (> 250 pts), anchor to tight recent 1-hour (last 4 candles) swing low.
     - Otherwise, last 4 candles swing high/low.
-    - Capped between 150 pts min and 500 pts max.
+    - Clamped strictly between SL_MIN_PTS (150) and SL_MAX_PTS (280).
     """
+    last_4 = df_15m.iloc[-4:]
+    if entry_signal == 'BUY_CALL':
+        recent_low = float(last_4['low'].min())
+        swing_dist = entry_price - (recent_low - buffer)
+    else:
+        recent_high = float(last_4['high'].max())
+        swing_dist = (recent_high + buffer) - entry_price
+
     if custom_sl is not None:
         if entry_signal == 'BUY_CALL':
-            sl_dist = entry_price - custom_sl
+            ob_dist = entry_price - custom_sl
         else:
-            sl_dist = custom_sl - entry_price
+            ob_dist = custom_sl - entry_price
+
+        # Anchor to OB only if tight (<= 250 pts); else fallback to recent 1-hour swing low
+        if ob_dist <= 250.0:
+            sl_dist = ob_dist
+        else:
+            sl_dist = swing_dist
     else:
-        last_4 = df_15m.iloc[-4:]
-        if entry_signal == 'BUY_CALL':
-            recent_low = float(last_4['low'].min())
-            sl_dist = entry_price - (recent_low - buffer)
-        else:
-            recent_high = float(last_4['high'].max())
-            sl_dist = (recent_high + buffer) - entry_price
-        
+        sl_dist = swing_dist
+
     sl_dist = max(SL_MIN_PTS, min(SL_MAX_PTS, sl_dist))
     return round(sl_dist, 2)
 
@@ -53,7 +65,9 @@ def update_active_obs(df_15m: pd.DataFrame, buffer: float = 30.0, min_gap: float
     for i in range(2, n):
         # 1. Bullish FVG (Gap between Candle i-2 High and Candle i Low)
         if c_low[i] > c_high[i-2] + min_gap and c_close[i-1] > c_open[i-1] and c_close[i-2] < c_open[i-2]:
+            ob_id = f"BULL_{round(float(c_low[i-2]), 1)}_{round(float(c_low[i]), 1)}_{i}"
             active_obs.append({
+                'id': ob_id,
                 'type': 'BULLISH',
                 'ob_high': float(c_high[i-2]),
                 'ob_low': float(c_low[i-2]),
@@ -64,7 +78,9 @@ def update_active_obs(df_15m: pd.DataFrame, buffer: float = 30.0, min_gap: float
             })
         # 2. Bearish FVG (Gap between Candle i-2 Low and Candle i High)
         if c_high[i] < c_low[i-2] - min_gap and c_close[i-1] < c_open[i-1] and c_close[i-2] > c_open[i-2]:
+            ob_id = f"BEAR_{round(float(c_high[i-2]), 1)}_{round(float(c_high[i]), 1)}_{i}"
             active_obs.append({
+                'id': ob_id,
                 'type': 'BEARISH',
                 'ob_high': float(c_high[i-2]),
                 'ob_low': float(c_low[i-2]),
@@ -88,27 +104,35 @@ def update_active_obs(df_15m: pd.DataFrame, buffer: float = 30.0, min_gap: float
     valid_obs = [ob for ob in active_obs if (curr_i - ob['created_i']) <= MAX_OB_BARS and not ob['mitigated']]
     return valid_obs
 
-def evaluate_market_setup(df_1h: pd.DataFrame, df_15m: pd.DataFrame, levels: dict, now_ist: datetime.datetime):
+def evaluate_market_setup(df_1h: pd.DataFrame, df_15m: pd.DataFrame, levels: dict, now_ist: datetime.datetime, used_obs: set = None, chop_zone: dict = None):
     """
     100% DELTA_API VERIFIED STRATEGY EVALUATOR (+45,000 USD Audited Setup):
     - Priority 1: SMC Liquidity Sweep (Reversal) -> Skip Saturday
     - Priority 2: SMC Order Block + FVG Genuine Retest -> Skip Sat & Sun
     - Hourly Filter: Skips the 7 identified loss-making trap hours (TRAP_HOURS_IST)
-    Returns: (signal, setup_type, custom_sl) or (None, None, None)
+    - Choppy Market Filters: Single-Retest Rule, 15m EMA Slope Guard, Post-Exit 4-Candle Chop Zone
+    Returns: (signal, setup_type, custom_sl, ob_id) or (None, None, None, None)
     """
     day_name = now_ist.strftime("%A")
     hour_ist = now_ist.hour
 
     # 1. TRAP HOUR FILTER: Skip the 7 verified loss hours [1, 7, 8, 9, 12, 18, 23]
     if hour_ist in TRAP_HOURS_IST:
-        return None, None, None
+        return None, None, None, None
 
     if len(df_1h) < 25 or len(df_15m) < 35:
-        return None, None, None
+        return None, None, None, None
 
     last_15m = df_15m.iloc[-1]
     prev_15m = df_15m.iloc[-2]
     latest_1h = df_1h.iloc[-1]
+
+    # Chop Zone Filter Guard: If price is inside an active post-exit chop zone, reject new trades
+    if ENABLE_CHOP_ZONE_FILTER and chop_zone:
+        z_low = chop_zone.get('low', 0.0)
+        z_high = chop_zone.get('high', float('inf'))
+        if z_low <= last_15m['close'] <= z_high:
+            return None, None, None, None
 
     # Higher Timeframe Trend Bias (1H Close vs 1H 20-EMA)
     trend_1h = 1 if latest_1h['close'] > latest_1h['ema20'] else -1
@@ -117,6 +141,12 @@ def evaluate_market_setup(df_1h: pd.DataFrame, df_15m: pd.DataFrame, levels: dic
     is_red   = last_15m['close'] < last_15m['open']
     above_ema15 = last_15m['close'] > last_15m['ema20']
     below_ema15 = last_15m['close'] < last_15m['ema20']
+
+    # 15m 20-EMA Slope Calculation in raw points (momentum check over lookback bars)
+    lookback_idx = min(len(df_15m) - 1, EMA_SLOPE_LOOKBACK_BARS)
+    past_ema = df_15m.iloc[-1 - lookback_idx]['ema20'] if 'ema20' in df_15m else last_15m.get('ema20', 0.0)
+    curr_ema = last_15m.get('ema20', past_ema)
+    ema_slope_pts = float(curr_ema - past_ema)
 
     # =========================================================================
     # PRIORITY 1: SMC LIQUIDITY SWEEP (REVERSAL) - SKIPS SATURDAY ONLY
@@ -138,9 +168,9 @@ def evaluate_market_setup(df_1h: pd.DataFrame, df_15m: pd.DataFrame, levels: dic
             swept_resistance = (prev_15m['high'] > resistance or last_15m['high'] > resistance) and last_15m['close'] < resistance and is_red and below_ema15
 
             if trend_1h == 1 and swept_support:
-                return 'BUY_CALL', 'REVERSAL', None
+                return 'BUY_CALL', 'REVERSAL', None, None
             if trend_1h == -1 and swept_resistance:
-                return 'BUY_PUT', 'REVERSAL', None
+                return 'BUY_PUT', 'REVERSAL', None, None
 
     # =========================================================================
     # PRIORITY 2: SMC ORDER BLOCK + FVG GENUINE RETEST - SKIPS SAT & SUN
@@ -154,17 +184,29 @@ def evaluate_market_setup(df_1h: pd.DataFrame, df_15m: pd.DataFrame, levels: dic
             if ob['created_i'] == curr_i:
                 continue
 
+            # 1. Single-Retest Rule: Each OB/FVG is valid for 1 genuine entry only
+            if ENABLE_SINGLE_RETEST and used_obs and ob['id'] in used_obs:
+                continue
+
             if ob['type'] == 'BULLISH' and trend_1h == 1:
+                # 3. 15m EMA Slope Guard: Require positive slope (>= +5 pts) to avoid flat/choppy markets
+                if ENABLE_EMA_SLOPE_GUARD and ema_slope_pts < EMA_SLOPE_MIN_PTS:
+                    continue
+
                 # Price pulls back into FVG gap and closes green above 15m 20-EMA
                 if last_15m['low'] <= ob['fvg_top'] and last_15m['close'] >= ob['ob_low'] and is_green and above_ema15:
-                    return 'BUY_CALL', 'OB_FVG', ob['sl']
+                    return 'BUY_CALL', 'OB_FVG', ob['sl'], ob['id']
 
             elif ob['type'] == 'BEARISH' and trend_1h == -1:
+                # 3. 15m EMA Slope Guard: Require negative slope (<= -5 pts) to avoid flat/choppy markets
+                if ENABLE_EMA_SLOPE_GUARD and ema_slope_pts > -EMA_SLOPE_MIN_PTS:
+                    continue
+
                 # Price rallies into FVG gap and closes red below 15m 20-EMA
                 if last_15m['high'] >= ob['fvg_bot'] and last_15m['close'] <= ob['ob_high'] and is_red and below_ema15:
-                    return 'BUY_PUT', 'OB_FVG', ob['sl']
+                    return 'BUY_PUT', 'OB_FVG', ob['sl'], ob['id']
 
-    return None, None, None
+    return None, None, None, None
 
 def calculate_option_delta(spot: float, strike: float, dte_days: float, is_call: bool, iv: float = 0.48) -> float:
     """Calculates Black-Scholes Delta for a given strike and DTE."""
